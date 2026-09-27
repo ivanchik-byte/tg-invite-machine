@@ -8,7 +8,9 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import async_session_factory
+from app.core.settings_service import get_daily_invite_limit
 from app.models.models import Account, Proxy, AudienceMember, InviteTask
+
 from app.bot.keyboards import main_menu_keyboard
 from app.core.utils import safe_edit_text
 from app.services.task_manager import invite_task_manager
@@ -74,10 +76,11 @@ async def build_main_dashboard_text() -> str:
         status_tag = "<code>[ IDLE ] Ожидание запуска</code>"
 
     header = (
-        "<b>TG-INVITE-MACHINE</b> <code>v0.1.0</code> | <b>Консоль управления</b>\n"
+        "<b>TG-INVITE-MACHINE</b> <code>v0.1.1</code> | <b>Консоль управления</b>\n"
         "────────────────────────\n"
         f"<b>Статус системы:</b> {status_tag}\n\n"
     )
+
 
     task_block = ""
     if is_running and active_task:
@@ -94,6 +97,7 @@ async def build_main_dashboard_text() -> str:
     speed_label = settings.DEFAULT_SPEED_PROFILE.replace("custom:", "свой: ") if settings.DEFAULT_SPEED_PROFILE.startswith("custom:") else settings.DEFAULT_SPEED_PROFILE
     proxy_mode = "Строгий Zero-Leak" if settings.REQUIRE_STRICT_PROXIES else "Прямой (без прокси)"
 
+    daily_limit = await get_daily_invite_limit()
     pools_block = (
         "<b>Ресурсный пул:</b>\n"
         f"• <b>Аккаунты:</b> <code>{total_accounts}</code> всего "
@@ -102,8 +106,10 @@ async def build_main_dashboard_text() -> str:
         f"• <b>База контактов:</b> <code>{pending_users:,}</code> в очереди | <code>{invited_users:,}</code> инвайтов | <code>{restricted_users:,}</code> приватных\n\n"
         "<b>Конфигурация воркера:</b>\n"
         f"• <b>Профиль скорости:</b> <code>{speed_label}</code>\n"
-        f"• <b>Сетевой контур:</b> <code>{proxy_mode}</code>\n\n"
+        f"• <b>Сетевой контур:</b> <code>{proxy_mode}</code>\n"
+        f"• <b>Суточный лимит:</b> <code>{daily_limit}</code> успешно приглашенных/сессию\n\n"
     )
+
 
     if is_running:
         footer = "<blockquote>Инвайтинг выполняется в фоновом режиме. Выберите действие ниже.</blockquote>"

@@ -26,8 +26,10 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.models import Account, AudienceMember, TargetGroup, InviteTask
+from app.core.settings_service import get_daily_invite_limit
+from app.models.models import Account, AudienceMember, TargetGroup, InviteTask, AudienceHistory
 from app.telegram.client_factory import get_telethon_client
+
 
 logger = logging.getLogger("tg_invite_machine")
 
@@ -231,15 +233,17 @@ class InviterOrchestrator:
                         )
                     break
 
+                daily_limit = await get_daily_invite_limit()
                 is_sqlite = "sqlite" in settings.DATABASE_URL
                 worker_query = select(Account).options(selectinload(Account.proxy)).where(
                     and_(
                         Account.is_active == True,
                         Account.status == "active",
                         (Account.cooldown_until.is_(None)) | (Account.cooldown_until <= now),
-                        Account.daily_invites_count < settings.MAX_INVITES_PER_SESSION_DAILY
+                        Account.daily_invites_count < daily_limit
                     )
                 ).order_by(Account.last_invite_at.asc().nullsfirst()).limit(1)
+
 
                 if not is_sqlite:
                     worker_query = worker_query.with_for_update(skip_locked=True)
@@ -413,6 +417,12 @@ class InviterOrchestrator:
                         db_member.status = "invited"
                         db_member.target_group_id = target_group.id
                         db_member.invited_by_account_id = account_id
+                        if db_member.tg_id:
+                            hist = (await session.execute(
+                                select(AudienceHistory).where(AudienceHistory.tg_id == db_member.tg_id)
+                            )).scalars().first()
+                            if hist:
+                                hist.status = "invited"
                     if db_account:
                         db_account.record_invite(now)
                     if task:
@@ -434,11 +444,18 @@ class InviterOrchestrator:
                         else:
                             db_member.status = error_status or "failed"
                             db_member.reason = error_reason
+                            if db_member.tg_id:
+                                hist = (await session.execute(
+                                    select(AudienceHistory).where(AudienceHistory.tg_id == db_member.tg_id)
+                                )).scalars().first()
+                                if hist:
+                                    hist.status = db_member.status
                     if task:
                         if error_status == "restricted":
                             task.restricted_count += 1
                         elif error_status in ("flood_wait", "peer_flood"):
                             task.flood_errors += 1
+
 
                 try:
                     await session.commit()

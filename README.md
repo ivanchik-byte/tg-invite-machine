@@ -5,11 +5,12 @@
 <p align="left">
   <a href="https://t.me/ivanchik_byte"><img src="https://img.shields.io/badge/Telegram-Канал-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Канал"></a>
   <a href="https://t.me/ivanchikbyte"><img src="https://img.shields.io/badge/Telegram-Личка-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Личка"></a>
-  <a href="https://github.com/ivanchik-byte/tg-invite-machine"><img src="https://img.shields.io/badge/Версия-0.1.0-blue?style=for-the-badge" alt="Версия 0.1.0"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/Тесты-50%20passed-success?style=for-the-badge" alt="Тесты"></a>
+  <a href="https://github.com/ivanchik-byte/tg-invite-machine"><img src="https://img.shields.io/badge/Версия-0.1.1-blue?style=for-the-badge" alt="Версия 0.1.1"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/Тесты-60%20passed-success?style=for-the-badge" alt="Тесты"></a>
 </p>
 
-> Статус: версия v0.1.0-stable. Кодовая база покрыта набором из 55 автоматизированных тестов. Вопросы по развертыванию или предложения можно отправлять в личные сообщения или открывать в issues.
+> Статус: версия v0.1.1-stable. Кодовая база покрыта набором из 60 автоматизированных тестов. Вопросы по развертыванию или предложения можно отправлять в личные сообщения или открывать в issues.
+
 
 > [!IMPORTANT]
 > **ДИСКЛЕЙМЕР / DISCLAIMER**: Данный программный комплекс разработан исключительно в образовательных целях, для исследования протокола MTProto и тестирования асинхронной архитектуры. Автор и разработчики не несут ответственности за любые последствия использования данного ПО, включая блокировки аккаунтов Telegram, ограничения каналов или нарушение правил платформы (Telegram Terms of Service). Все действия осуществляются конечным пользователем исключительно на свой страх и риск.

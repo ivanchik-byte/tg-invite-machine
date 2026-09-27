@@ -14,6 +14,7 @@ from telethon.tl.functions.messages import MigrateChatRequest
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.models.models import Account, AudienceMember, TargetGroup, InviteTask
+from app.core.settings_service import get_daily_invite_limit, set_daily_invite_limit
 from app.bot.states import InviterState
 from app.bot.keyboards import (
     inviter_menu_keyboard,
@@ -21,13 +22,17 @@ from app.bot.keyboards import (
     inviter_config_keyboard,
     back_keyboard,
     migrate_confirm_keyboard,
+    daily_limit_keyboard,
+    main_menu_keyboard,
 )
+from app.bot.handlers.menu import build_main_dashboard_text
 from app.services.inviter_service import InviterOrchestrator
 from app.services.task_manager import invite_task_manager
 from app.telegram.client_factory import get_telethon_client
 from app.core.utils import normalize_chat_identifier, safe_edit_text
 
 inviter_router = Router()
+
 
 VALID_SPEED_PROFILES = {"cautious", "normal", "fast"}
 
@@ -61,6 +66,7 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
     else:
         status_tag = "<code>[ IDLE ] Остановлен</code>"
 
+    daily_limit = await get_daily_invite_limit()
     speed_label = settings.DEFAULT_SPEED_PROFILE.replace("custom:", "свой: ") if settings.DEFAULT_SPEED_PROFILE.startswith("custom:") else settings.DEFAULT_SPEED_PROFILE
 
     text = (
@@ -70,12 +76,14 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
         "<b>Параметры очереди:</b>\n"
         f"• <b>Пользователей в очереди:</b> <code>{pending_count}</code> чел.\n"
         f"• <b>Готовых сессий:</b> <code>{active_accounts}</code> шт. (в отлежке: <code>{cooldown_accounts}</code>)\n"
+        f"• <b>Суточный лимит:</b> <code>{daily_limit}</code> успешно приглашенных на акк\n"
         f"• <b>Профиль скорости:</b> <code>{speed_label}</code>\n"
         f"• <b>Алгоритм пауз:</b> <code>Тримодальное распределение</code>\n\n"
         "<blockquote>При запуске бот проверит статус группы и запустит распределенный цикл с автоматической ротацией сессий при FloodWait.</blockquote>"
     )
-    await safe_edit_text(callback.message, text, reply_markup=inviter_menu_keyboard(task_running=is_running, is_paused=is_paused))
+    await safe_edit_text(callback.message, text, reply_markup=inviter_menu_keyboard(task_running=is_running, is_paused=is_paused, daily_limit=daily_limit))
     await callback.answer()
+
 
 @inviter_router.callback_query(F.data == "invite_speed")
 async def callback_invite_speed(callback: CallbackQuery):
@@ -108,6 +116,68 @@ async def callback_set_speed(callback: CallbackQuery, state: FSMContext):
     settings.DEFAULT_SPEED_PROFILE = profile
     await callback.answer(f"Установлен профиль: {profile}")
     await callback_nav_inviter(callback, state)
+
+@inviter_router.callback_query(F.data == "invite_daily_limit")
+async def callback_invite_daily_limit(callback: CallbackQuery):
+    daily_limit = await get_daily_invite_limit()
+    text = (
+        "<b>TG-INVITE-MACHINE | Суточный лимит инвайтов</b>\n"
+        "────────────────────────\n"
+        f"• Текущий лимит: <code>{daily_limit}</code> успешно приглашенных в сутки на аккаунт.\n\n"
+        "<b>Важно:</b> лимит считает ТОЛЬКО реально добавленных пользователей в группу (успешные инвайты).\n"
+        "Ошибки приватности, уже состоящие в группе и временные спамблоки в лимит НЕ входят.\n\n"
+        "Выберите новое значение или укажите свое:"
+    )
+    await safe_edit_text(callback.message, text, reply_markup=daily_limit_keyboard(daily_limit))
+    await callback.answer()
+
+@inviter_router.callback_query(F.data.startswith("set_daily_"))
+async def callback_set_daily_limit_handler(callback: CallbackQuery, state: FSMContext):
+    val_str = callback.data.replace("set_daily_", "")
+    if val_str == "custom":
+        await state.set_state(InviterState.waiting_for_daily_limit)
+        await callback.message.edit_text(
+            "Введите суточный лимит успешных инвайтов на один аккаунт (от 1 до 500):\n"
+            "<i>Например: 20 или 50</i>\n\n"
+            "<i>Для отмены отправьте /cancel.</i>",
+            reply_markup=back_keyboard("nav_inviter")
+        )
+        await callback.answer()
+        return
+
+    try:
+        new_limit = int(val_str)
+        await set_daily_invite_limit(new_limit)
+        await callback.answer(f"Суточный лимит установлен: {new_limit} инвайтов/сессию", show_alert=True)
+        await callback_nav_inviter(callback, state)
+    except Exception as exc:
+        await callback.answer(f"Ошибка: {exc}", show_alert=True)
+
+@inviter_router.message(InviterState.waiting_for_daily_limit, F.text)
+async def handle_custom_daily_limit(message: Message, state: FSMContext):
+    if message.text.strip().startswith("/cancel"):
+        await state.clear()
+        await message.answer("Отменено.")
+        dashboard_text = await build_main_dashboard_text()
+        await message.answer(dashboard_text, reply_markup=main_menu_keyboard())
+        return
+
+    try:
+        limit = int(message.text.strip())
+        if limit <= 0 or limit > 1000:
+            raise ValueError
+    except ValueError:
+        await message.answer("Пожалуйста, введите положительное число от 1 до 1000 (или /cancel):")
+        return
+
+    await set_daily_invite_limit(limit)
+    await state.clear()
+    await message.answer(
+        f"Суточный лимит успешно установлен: <code>{limit}</code> успешно приглашенных на аккаунт."
+    )
+    dashboard_text = await build_main_dashboard_text()
+    await message.answer(dashboard_text, reply_markup=main_menu_keyboard())
+
 
 @inviter_router.callback_query(F.data == "invite_start")
 async def callback_invite_start(callback: CallbackQuery, state: FSMContext):
@@ -338,15 +408,20 @@ async def _show_pre_launch_config(
     else:
         speed_text = "Обычный (35-75с)"
 
+    daily_limit = await get_daily_invite_limit()
     text = (
-        "Параметры инвайтинга:\n\n"
-        f"Цель: {quote_html(target_link)} ({type_label})\n"
-        f"Лимит участников: {limit_text}\n"
-        f"Режим скорости: {speed_text}\n\n"
-        "Настройте лимит и интервалы кнопками ниже и запустите задачу:"
+        "<b>TG-INVITE-MACHINE | Параметры инвайтинга</b>\n"
+        "────────────────────────\n"
+        f"• <b>Цель:</b> <code>{quote_html(target_link)}</code> ({type_label})\n"
+        f"• <b>Лимит на эту задачу:</b> <code>{limit_text}</code> приглашенных\n"
+        f"• <b>Суточный лимит сессий:</b> <code>{daily_limit}</code> успешно добавленных на акк\n"
+        f"• <b>Режим скорости:</b> <code>{speed_text}</code>\n\n"
+        "<i>Лимиты считают только реально добавленных людей, пропуски и приватные профили лимит не тратят.</i>\n\n"
+        "Настройте параметры кнопками ниже и запустите задачу:"
     )
     keyboard = inviter_config_keyboard(selected_limit=selected_limit, current_profile=profile)
     await safe_edit_text(message, text, reply_markup=keyboard)
+
 
 
 @inviter_router.callback_query(F.data.startswith("cfg_limit_"))

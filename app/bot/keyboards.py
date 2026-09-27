@@ -68,14 +68,16 @@ def parser_menu_keyboard() -> InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
-def inviter_menu_keyboard(task_running: bool = False, is_paused: bool = False) -> InlineKeyboardMarkup:
+def inviter_menu_keyboard(task_running: bool = False, is_paused: bool = False, daily_limit: Optional[int] = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if not task_running:
         builder.row(
             InlineKeyboardButton(text="Запустить инвайт", callback_data="invite_start"),
             InlineKeyboardButton(text="Профиль скорости", callback_data="invite_speed")
         )
+        limit_text = f"Дневной лимит ({daily_limit})" if daily_limit else "Дневной лимит"
         builder.row(
+            InlineKeyboardButton(text=limit_text, callback_data="invite_daily_limit"),
             InlineKeyboardButton(text="История инвайтов", callback_data="invite_history")
         )
     elif is_paused:
@@ -97,6 +99,18 @@ def inviter_menu_keyboard(task_running: bool = False, is_paused: bool = False) -
     builder.row(
         InlineKeyboardButton(text="Назад в меню", callback_data="nav_main")
     )
+    return builder.as_markup()
+
+def daily_limit_keyboard(current_limit: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    presets = [10, 20, 30, 50, 100]
+    row1 = [InlineKeyboardButton(text=f"{'• ' if current_limit == v else ''}{v}", callback_data=f"set_daily_{v}") for v in presets[:3]]
+    row2 = [InlineKeyboardButton(text=f"{'• ' if current_limit == v else ''}{v}", callback_data=f"set_daily_{v}") for v in presets[3:]]
+    builder.row(*row1)
+    builder.row(*row2)
+    custom_label = f"• Свой лимит: {current_limit}" if current_limit not in presets else "Свой суточный лимит"
+    builder.row(InlineKeyboardButton(text=custom_label, callback_data="set_daily_custom"))
+    builder.row(InlineKeyboardButton(text="Назад в инвайтер", callback_data="nav_inviter"))
     return builder.as_markup()
 
 def speed_profile_keyboard() -> InlineKeyboardMarkup:

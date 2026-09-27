@@ -16,3 +16,5 @@ class InviterState(StatesGroup):
     waiting_for_migrate_confirm = State()
     waiting_for_invite_limit = State()
     waiting_for_custom_delay = State()
+    waiting_for_daily_limit = State()
+

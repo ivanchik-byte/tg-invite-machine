@@ -11,15 +11,16 @@ from telethon.tl.types import (
 )
 from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import DATA_DIR
-from app.models.models import Account, AudienceMember
+from app.models.models import Account, AudienceMember, AudienceHistory
 from app.telegram.client_factory import get_telethon_client
 
-ProgressCallback = Callable[[int, str], Awaitable[None]]
+ProgressCallback = Callable[[int, str, Optional[str]], Awaitable[None]]
+
 
 async def collect_chat_members(
     session: AsyncSession,
@@ -63,7 +64,7 @@ async def collect_chat_members(
 
         if active_days:
             if progress_callback:
-                await progress_callback(0, "Сканирование авторов активных сообщений...")
+                await progress_callback(0, "Сканирование авторов активных сообщений...", None)
 
             async for message in client.iter_messages(chat_entity, limit=3000):
                 if not message.sender or not isinstance(message.sender, User):
@@ -75,12 +76,16 @@ async def collect_chat_members(
                 if user.bot or user.deleted:
                     continue
 
-                collected_users[user.id] = user
-                if progress_callback and len(collected_users) % 50 == 0:
-                    await progress_callback(len(collected_users), f"Собрано {len(collected_users)} активных пользователей...")
+                if user.id not in collected_users:
+                    collected_users[user.id] = user
+                    if progress_callback:
+                        u_tag = f"@{user.username}" if user.username else f"ID:{user.id}"
+                        if user.first_name:
+                            u_tag += f" ({user.first_name[:18]})"
+                        await progress_callback(len(collected_users), f"Собрано {len(collected_users)} активных пользователей...", u_tag)
         else:
             if progress_callback:
-                await progress_callback(0, "Сбор списка участников чата...")
+                await progress_callback(0, "Сбор списка участников чата...", None)
 
             cyrillic = [chr(c) for c in range(ord('а'), ord('я') + 1)]
             alphabet = [""] + list(string.ascii_lowercase) + cyrillic + [str(d) for d in range(10)]
@@ -99,13 +104,15 @@ async def collect_chat_members(
                             seen_ids.add(participant.id)
                             collected_users[participant.id] = participant
 
-                        if progress_callback:
-                            await progress_callback(len(collected_users), f"Собрано {len(collected_users)} участников...")
+                            if progress_callback:
+                                u_tag = f"@{participant.username}" if participant.username else f"ID:{participant.id}"
+                                if participant.first_name:
+                                    u_tag += f" ({participant.first_name[:18]})"
+                                await progress_callback(len(collected_users), f"Собрано {len(collected_users)} участников...", u_tag)
 
                         if len(collected_users) > 10000:
                             break
                     except errors.FloodWaitError:
-                        # Если Telegram притормозил поиск по алфавиту, сохраняем уже найденных
                         break
             except errors.ChatAdminRequiredError:
                 if not collected_users:
@@ -122,19 +129,42 @@ async def collect_chat_members(
         user_ids = [u.id for u in all_users]
 
         existing_ids = set()
+        existing_usernames = set()
+
         for i in range(0, len(user_ids), 500):
-            chunk = user_ids[i:i + 500]
-            query_res = await session.execute(
-                select(AudienceMember.tg_id).where(
-                    AudienceMember.tg_id.in_(chunk),
-                    AudienceMember.source_chat == str(source_name)
+            chunk_ids = user_ids[i:i + 500]
+            q1 = await session.execute(
+                select(AudienceMember.tg_id).where(AudienceMember.tg_id.in_(chunk_ids))
+            )
+            existing_ids.update(q1.scalars().all())
+
+            q2 = await session.execute(
+                select(AudienceHistory.tg_id).where(AudienceHistory.tg_id.in_(chunk_ids))
+            )
+            existing_ids.update(q2.scalars().all())
+
+        raw_usernames = [u.username.lower() for u in all_users if u.username]
+        for i in range(0, len(raw_usernames), 500):
+            chunk_un = raw_usernames[i:i + 500]
+            q3 = await session.execute(
+                select(func.lower(AudienceMember.username)).where(
+                    func.lower(AudienceMember.username).in_(chunk_un)
                 )
             )
-            existing_ids.update(query_res.scalars().all())
+            existing_usernames.update(q3.scalars().all())
+
+            q4 = await session.execute(
+                select(func.lower(AudienceHistory.username)).where(
+                    func.lower(AudienceHistory.username).in_(chunk_un)
+                )
+            )
+            existing_usernames.update(q4.scalars().all())
 
         new_members = []
+        new_history = []
         for tg_user in all_users:
-            if tg_user.id in existing_ids:
+            un_lower = tg_user.username.lower() if tg_user.username else None
+            if tg_user.id in existing_ids or (un_lower and un_lower in existing_usernames):
                 existing_skipped += 1
                 continue
 
@@ -147,18 +177,32 @@ async def collect_chat_members(
                 source_chat=str(source_name),
                 status="pending"
             )
+            history_record = AudienceHistory(
+                tg_id=tg_user.id,
+                username=tg_user.username,
+                first_name=tg_user.first_name,
+                last_name=tg_user.last_name,
+                source_chat=str(source_name),
+                status="collected"
+            )
             new_members.append(member)
+            new_history.append(history_record)
+            existing_ids.add(tg_user.id)
+            if un_lower:
+                existing_usernames.add(un_lower)
             new_saved += 1
 
         if new_members:
             try:
                 session.add_all(new_members)
+                session.add_all(new_history)
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
-                for member in new_members:
+                for member, hist in zip(new_members, new_history):
                     try:
                         session.add(member)
+                        session.add(hist)
                         await session.commit()
                     except IntegrityError:
                         await session.rollback()
