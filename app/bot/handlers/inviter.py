@@ -618,13 +618,18 @@ async def _create_and_launch_task(
         bar = "█" * filled + "░" * (bar_len - filled)
         prog_bar = f"[{bar}] {int(percent * 100)}%"
 
+        if "\n" in status_text:
+            body = status_text
+        else:
+            body = f"• <b>Текущий статус:</b> <code>{quote_html(status_text)}</code>"
+
         ui_text = (
             "<b>TG-INVITE-MACHINE | Мониторинг кампании</b>\n"
             "────────────────────────\n"
             f"<b>Целевой чат:</b> <code>{quote_html(target_link)}</code>\n"
             f"<b>Прогресс:</b> <code>{prog_bar}</code> ({invited} / {target_total})\n"
-            f"• <b>Флуд-паузы:</b> <code>{floods}</code>\n"
-            f"• <b>Текущий статус:</b> <code>{quote_html(status_text)}</code>\n\n"
+            f"• <b>Флуд-паузы:</b> <code>{floods}</code>\n\n"
+            f"{body}\n\n"
             "<blockquote>Прогресс инвайтинга обновляется в реальном времени.</blockquote>"
         )
         try:
@@ -716,3 +721,53 @@ async def callback_invite_stop(callback: CallbackQuery):
         await callback.message.edit_text("Инвайтинг остановлен пользователем.", reply_markup=inviter_menu_keyboard(task_running=False))
     else:
         await callback.answer("Нет активной задачи.", show_alert=True)
+
+
+@inviter_router.callback_query(F.data == "invite_history")
+async def callback_invite_history(callback: CallbackQuery):
+    async with async_session_factory() as session:
+        members = (await session.execute(
+            select(AudienceMember)
+            .where(AudienceMember.status != "pending")
+            .order_by(AudienceMember.updated_at.desc())
+            .limit(15)
+        )).scalars().all()
+
+        total_processed = (await session.execute(
+            select(func.count(AudienceMember.id))
+            .where(AudienceMember.status != "pending")
+        )).scalar_one()
+
+        invited_count = (await session.execute(
+            select(func.count(AudienceMember.id))
+            .where(AudienceMember.status == "invited")
+        )).scalar_one()
+
+    if not members:
+        await callback.answer("История инвайтов пока пуста. Запустите инвайтинг.", show_alert=True)
+        return
+
+    lines = []
+    for m in members:
+        user_label = f"@{m.username}" if m.username else (m.first_name or f"ID:{m.tg_id or m.id}")
+        if m.status == "invited":
+            tag = "[ УСПЕХ ] Добавлен"
+        elif m.status == "restricted":
+            tag = f"[ ПРОПУСК ] {m.reason or 'Приватность'}"
+        elif m.status == "already_participant":
+            tag = "[ ПРОПУСК ] Уже в группе"
+        else:
+            tag = f"[ {m.status.upper()} ] {m.reason or 'Ошибка'}"
+        lines.append(f"• <code>{user_label}</code> - {tag}")
+
+    history_content = "\n".join(lines)
+    text = (
+        "<b>TG-INVITE-MACHINE | История обработки аудитории</b>\n"
+        "────────────────────────\n"
+        f"• Всего обработано: <code>{total_processed}</code> чел.\n"
+        f"• Успешно добавлено: <code>{invited_count}</code> чел.\n\n"
+        f"<b>Последние попытки (до 15):</b>\n{history_content}"
+    )
+    await callback.message.edit_text(text, reply_markup=back_keyboard("nav_inviter"))
+    await callback.answer()
+

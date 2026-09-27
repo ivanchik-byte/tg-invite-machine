@@ -84,6 +84,7 @@ class InviterOrchestrator:
         self._stop_event = asyncio.Event()
         self._pause_event = asyncio.Event()
         self._pause_event.set()
+        self.recent_events: List[str] = []
 
     @property
     def is_paused(self) -> bool:
@@ -345,15 +346,6 @@ class InviterOrchestrator:
                             for m in getattr(res, "missing_invitees", [])
                         )
                         error_reason = "Приватность (требуется Premium)" if premium_req else "Приватность пользователя"
-                    elif hasattr(res, "updates") and isinstance(getattr(res.updates, "users", None), list) and not added_uids:
-                        # Telegram silently ignored invite (user already in group or privacy)
-                        invite_success = False
-                        error_status = "already_participant"
-                        error_reason = "Уже состоит в группе или скрыт"
-                    elif target_uid and added_uids and target_uid not in added_uids:
-                        invite_success = False
-                        error_status = "restricted"
-                        error_reason = "Приватность пользователя"
                     else:
                         invite_success = True
 
@@ -485,9 +477,20 @@ class InviterOrchestrator:
                     target_member.first_name or f"id:{target_member.tg_id or member_id}"
                 )
                 if invite_success:
-                    current_status = f"Пользователь {user_tag} добавлен"
+                    event_str = f"• <code>{user_tag}</code> - добавлен"
+                    current_line = f"Пользователь {user_tag} добавлен"
                 else:
-                    current_status = f"Пользователь {user_tag}: пропуск ({error_reason})"
+                    event_str = f"• <code>{user_tag}</code> - пропуск ({error_reason})"
+                    current_line = f"Пользователь {user_tag}: пропуск ({error_reason})"
+
+                self.recent_events.insert(0, event_str)
+                self.recent_events = self.recent_events[:5]
+
+                history_block = "\n".join(self.recent_events)
+                current_status = (
+                    f"{current_line}\n\n"
+                    f"<b>История последних попыток:</b>\n{history_block}"
+                )
 
                 if progress_callback and task:
                     await progress_callback(

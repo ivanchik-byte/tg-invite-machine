@@ -476,6 +476,7 @@ async def callback_check_all(callback: CallbackQuery):
 
 @accounts_router.callback_query(F.data == "acc_check_spambot")
 async def callback_check_spambot(callback: CallbackQuery):
+    await callback.answer("Запуск проверки через @SpamBot...")
     status_msg = await callback.message.edit_text("Запуск проверки аккаунтов через @SpamBot...")
 
     async with async_session_factory() as session:
@@ -509,7 +510,6 @@ async def callback_check_spambot(callback: CallbackQuery):
         f"• Со спамблоком: <code>{limited_count}</code>",
         reply_markup=back_keyboard("nav_accounts")
     )
-    await callback.answer()
 
 @accounts_router.callback_query(F.data == "acc_export_excel")
 async def callback_export_excel(callback: CallbackQuery):

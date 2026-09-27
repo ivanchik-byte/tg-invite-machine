@@ -35,13 +35,14 @@ def classify_spambot_reply(reply_text: str) -> Tuple[str, str]:
     return "unknown", reply_text[:120].strip() or "Нет ответа"
 
 async def check_account_spambot(account: Account) -> Tuple[str, str]:
-    client: TelegramClient = get_telethon_client(account)
+    assigned_proxy = getattr(account, "proxy", None)
+    client: TelegramClient = get_telethon_client(account, proxy=assigned_proxy)
     try:
         await client.connect()
         if not await client.is_user_authorized():
             return "banned", "Сессия отозвана"
 
-        async with client.conversation("@SpamBot", timeout=15) as dialog:
+        async with client.conversation("@SpamBot", timeout=8) as dialog:
             await dialog.send_message("/start")
             response = await dialog.get_response()
             text = response.raw_text or ""

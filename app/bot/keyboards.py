@@ -75,15 +75,24 @@ def inviter_menu_keyboard(task_running: bool = False, is_paused: bool = False) -
             InlineKeyboardButton(text="Запустить инвайт", callback_data="invite_start"),
             InlineKeyboardButton(text="Профиль скорости", callback_data="invite_speed")
         )
+        builder.row(
+            InlineKeyboardButton(text="История инвайтов", callback_data="invite_history")
+        )
     elif is_paused:
         builder.row(
             InlineKeyboardButton(text="Возобновить", callback_data="invite_resume"),
             InlineKeyboardButton(text="Остановить", callback_data="invite_stop")
         )
+        builder.row(
+            InlineKeyboardButton(text="История инвайтов", callback_data="invite_history")
+        )
     else:
         builder.row(
             InlineKeyboardButton(text="Пауза", callback_data="invite_pause"),
             InlineKeyboardButton(text="Остановить", callback_data="invite_stop")
+        )
+        builder.row(
+            InlineKeyboardButton(text="История инвайтов", callback_data="invite_history")
         )
     builder.row(
         InlineKeyboardButton(text="Назад в меню", callback_data="nav_main")

@@ -306,6 +306,7 @@ async def test_account_api_id_and_telethon_client(test_session, monkeypatch):
 async def test_inviter_detects_missing_invitees_and_silent_omissions():
     from telethon.tl.types.messages import InvitedUsers
     from telethon.tl.types import MissingInvitee, Updates, User
+    from telethon.errors import UserAlreadyParticipantError
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
@@ -388,7 +389,7 @@ async def test_inviter_detects_missing_invitees_and_silent_omissions():
         if uid == 111:
             return res_private
         elif uid == 222:
-            return res_already
+            raise UserAlreadyParticipantError(None)
         else:
             return res_success
 
