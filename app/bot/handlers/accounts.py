@@ -9,7 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings, TEMP_DIR
 from app.core.database import async_session_factory
-from app.core.security import safe_extract_zip
+from app.core.security import safe_extract_zip, encrypt_session_string
 from app.models.models import Account, Proxy
 from app.bot.states import AccountState
 from app.bot.keyboards import accounts_menu_keyboard, back_keyboard, accounts_pagination_keyboard
@@ -88,7 +88,8 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                     async with async_session_factory() as session:
                         db_proxies = []
                         for host, port, user, pwd, proto in available_proxies:
-                            p_obj = Proxy(host=host, port=port, username=user, password=pwd, protocol=proto, is_active=True)
+                            enc_pwd = encrypt_session_string(pwd) if pwd else None
+                            p_obj = Proxy(host=host, port=port, username=user, password=enc_pwd, protocol=proto, is_active=True)
                             session.add(p_obj)
                             db_proxies.append(p_obj)
                         if db_proxies:
@@ -305,7 +306,9 @@ async def callback_check_all(callback: CallbackQuery):
     status_msg = await callback.message.edit_text("Запуск проверки подключения всех аккаунтов...")
 
     async with async_session_factory() as session:
-        accounts = (await session.execute(select(Account))).scalars().all()
+        accounts = (await session.execute(
+            select(Account).options(selectinload(Account.proxy))
+        )).scalars().all()
 
     valid_count = 0
     banned_count = 0
@@ -337,9 +340,10 @@ async def callback_check_all(callback: CallbackQuery):
             await client.disconnect()
 
         if idx % 3 == 0 or idx == len(accounts):
-            await status_msg.edit_text(f"Проверено {idx}/{len(accounts)} аккаунтов...\nВалидных: {valid_count}, Недоступных: {banned_count}")
+            await safe_edit_text(status_msg, f"Проверено {idx}/{len(accounts)} аккаунтов...\nВалидных: {valid_count}, Недоступных: {banned_count}")
 
-    await status_msg.edit_text(
+    await safe_edit_text(
+        status_msg,
         f"Проверка завершена.\nВалидных аккаунтов: {valid_count}\nОтозванных/недоступных: {banned_count}",
         reply_markup=back_keyboard("nav_accounts")
     )
@@ -350,7 +354,9 @@ async def callback_check_spambot(callback: CallbackQuery):
     status_msg = await callback.message.edit_text("Запуск проверки аккаунтов через @SpamBot...")
 
     async with async_session_factory() as session:
-        accounts = (await session.execute(select(Account).where(Account.status != "banned"))).scalars().all()
+        accounts = (await session.execute(
+            select(Account).options(selectinload(Account.proxy)).where(Account.status != "banned")
+        )).scalars().all()
 
     clean_count = 0
     limited_count = 0
@@ -369,9 +375,10 @@ async def callback_check_spambot(callback: CallbackQuery):
             limited_count += 1
 
         if idx % 2 == 0 or idx == len(accounts):
-            await status_msg.edit_text(f"Проверено через @SpamBot {idx}/{len(accounts)}...\nЧистых: {clean_count}, Со спамблоком: {limited_count}")
+            await safe_edit_text(status_msg, f"Проверено через @SpamBot {idx}/{len(accounts)}...\nЧистых: {clean_count}, Со спамблоком: {limited_count}")
 
-    await status_msg.edit_text(
+    await safe_edit_text(
+        status_msg,
         f"Проверка @SpamBot завершена.\nБез ограничений: {clean_count}\nСо спамблоком: {limited_count}",
         reply_markup=back_keyboard("nav_accounts")
     )

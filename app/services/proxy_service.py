@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Proxy
+from app.core.security import encrypt_session_string
 
 def parse_proxy_line(raw_line: str) -> Optional[Tuple[str, int, Optional[str], Optional[str], str]]:
     line = raw_line.strip()
@@ -67,6 +68,7 @@ async def import_proxies_from_text(session: AsyncSession, raw_text: str) -> Tupl
             select(Proxy).where(
                 Proxy.host == host,
                 Proxy.port == port,
+                Proxy.protocol == protocol,
                 Proxy.username == username
             )
         )
@@ -74,11 +76,12 @@ async def import_proxies_from_text(session: AsyncSession, raw_text: str) -> Tupl
             skipped_count += 1
             continue
 
+        encrypted_pwd = encrypt_session_string(password) if password else None
         proxy = Proxy(
             host=host,
             port=port,
             username=username,
-            password=password,
+            password=encrypted_pwd,
             protocol=protocol,
             is_active=True
         )

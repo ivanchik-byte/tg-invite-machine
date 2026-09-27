@@ -33,8 +33,8 @@ class Proxy(Base):
 
     @property
     def url(self) -> str:
-        if self.username and self.password:
-            return f"{self.protocol}://{self.username}:{self.password}@{self.host}:{self.port}"
+        if self.username:
+            return f"{self.protocol}://{self.username}:***@{self.host}:{self.port}"
         return f"{self.protocol}://{self.host}:{self.port}"
 
 class Account(Base):

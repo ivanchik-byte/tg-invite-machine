@@ -41,7 +41,7 @@ async def callback_parse_all(callback: CallbackQuery, state: FSMContext):
         "Введите ссылку или @username открытого чата/канала для сбора участников:\n"
         "Например: @python_chat или https://t.me/example_group"
     )
-    await callback.message.edit_text(text, reply_markup=back_keyboard("nav_parser"))
+    await safe_edit_text(callback.message, text, reply_markup=back_keyboard("nav_parser"))
     await callback.answer()
 
 @parser_router.callback_query(F.data == "parse_active")
@@ -52,7 +52,7 @@ async def callback_parse_active(callback: CallbackQuery, state: FSMContext):
         "Введите ссылку или @username чата для сбора активных авторов сообщений:\n"
         "Например: @tech_community или https://t.me/tech_community"
     )
-    await callback.message.edit_text(text, reply_markup=back_keyboard("nav_parser"))
+    await safe_edit_text(callback.message, text, reply_markup=back_keyboard("nav_parser"))
     await callback.answer()
 
 @parser_router.message(ParserState.waiting_for_chat, F.text)
@@ -96,7 +96,8 @@ async def execute_parsing(message: Message, state: FSMContext, chat_identifier: 
         )).scalars().first()
 
     if not account:
-        await status_msg.edit_text(
+        await safe_edit_text(
+            status_msg,
             "В пуле нет ни одного активного аккаунта. Сначала добавьте аккаунт в разделе 'Аккаунты'.",
             reply_markup=back_keyboard("nav_parser")
         )
@@ -104,10 +105,7 @@ async def execute_parsing(message: Message, state: FSMContext, chat_identifier: 
         return
 
     async def report_progress(count: int, stage_text: str):
-        try:
-            await status_msg.edit_text(f"Статус сбора: {stage_text}")
-        except Exception:
-            pass
+        await safe_edit_text(status_msg, f"Статус сбора: {stage_text}")
 
     try:
         async with async_session_factory() as session:

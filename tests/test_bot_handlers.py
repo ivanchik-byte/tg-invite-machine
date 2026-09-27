@@ -122,3 +122,103 @@ def test_settings_delay_validator():
 
     with pytest.raises(ValueError, match="Invalid DEFAULT_SPEED_PROFILE"):
         Settings(DEFAULT_SPEED_PROFILE="turbo_unsafe")
+
+def test_proxy_password_encryption_and_decryption():
+    from app.core.security import encrypt_session_string
+    from app.telegram.client_factory import build_proxy_dict, decrypt_proxy_password
+
+    raw_password = "SecretPassword123!"
+    encrypted_pwd = encrypt_session_string(raw_password)
+    assert encrypted_pwd != raw_password
+
+    assert decrypt_proxy_password(encrypted_pwd) == raw_password
+    assert decrypt_proxy_password("plaintext_fallback") == "plaintext_fallback"
+    assert decrypt_proxy_password(None) is None
+
+    proxy = Proxy(
+        host="192.168.1.1",
+        port=1080,
+        protocol="socks5",
+        username="proxyuser",
+        password=encrypted_pwd,
+        is_active=True
+    )
+    proxy_dict = build_proxy_dict(proxy)
+    assert proxy_dict["password"] == raw_password
+    assert proxy_dict["username"] == "proxyuser"
+    assert proxy_dict["proxy_type"] == "socks5"
+
+def test_proxy_protocol_whitelist_fallback():
+    from app.telegram.client_factory import build_proxy_dict
+
+    proxy_bad = Proxy(host="10.0.0.1", port=1080, protocol="invalid_proto", is_active=True)
+    assert build_proxy_dict(proxy_bad)["proxy_type"] == "socks5"
+
+    proxy_none = Proxy(host="10.0.0.1", port=1080, protocol=None, is_active=True)
+    assert build_proxy_dict(proxy_none)["proxy_type"] == "socks5"
+
+    proxy_socks4 = Proxy(host="10.0.0.1", port=1080, protocol="socks4", is_active=True)
+    assert build_proxy_dict(proxy_socks4)["proxy_type"] == "socks4"
+
+    proxy_http = Proxy(host="10.0.0.1", port=1080, protocol="HTTP", is_active=True)
+    assert build_proxy_dict(proxy_http)["proxy_type"] == "http"
+
+def test_proxy_url_masks_password():
+    proxy = Proxy(
+        host="1.2.3.4",
+        port=8080,
+        protocol="socks5",
+        username="user1",
+        password="super_secret_password"
+    )
+    assert "super_secret_password" not in proxy.url
+    assert proxy.url == "socks5://user1:***@1.2.3.4:8080"
+
+    proxy_no_user = Proxy(host="1.2.3.4", port=8080, protocol="socks5")
+    assert proxy_no_user.url == "socks5://1.2.3.4:8080"
+
+@pytest.mark.asyncio
+async def test_inviter_orchestrator_instant_stop():
+    import asyncio
+    import time
+    from app.services.inviter_service import InviterOrchestrator
+
+    orchestrator = InviterOrchestrator(task_id=999)
+
+    async def trigger_stop():
+        await asyncio.sleep(0.05)
+        orchestrator.stop()
+
+    start = time.perf_counter()
+    asyncio.create_task(trigger_stop())
+    await asyncio.wait_for(orchestrator._stop_event.wait(), timeout=5.0)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 0.5
+    assert orchestrator._stop_event.is_set()
+
+@pytest.mark.asyncio
+async def test_proxy_service_import_encrypts_password():
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from app.models.models import Base
+    from app.services.proxy_service import import_proxies_from_text
+    from app.core.security import decrypt_session_string
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as session:
+        added, skipped = await import_proxies_from_text(session, "socks5://testuser:rawpassword@1.1.1.1:1080")
+        assert added == 1
+        assert skipped == 0
+
+        proxy = (await session.execute(select(Proxy).where(Proxy.host == "1.1.1.1"))).scalars().first()
+        assert proxy is not None
+        assert proxy.password != "rawpassword"
+        assert decrypt_session_string(proxy.password) == "rawpassword"
+
+    await engine.dispose()
+

@@ -10,14 +10,26 @@ class ProxySecurityError(Exception):
     """Raised when an active proxy is required to prevent host IP leaks."""
     pass
 
+def decrypt_proxy_password(password: Optional[str]) -> Optional[str]:
+    if not password:
+        return None
+    try:
+        return decrypt_session_string(password)
+    except Exception:
+        return password
+
 def build_proxy_dict(proxy: Optional[Proxy]) -> Optional[Dict[str, Any]]:
     if not proxy:
         return None
     if not proxy.is_active:
         raise ProxySecurityError(f"Assigned proxy {proxy.host}:{proxy.port} is inactive")
 
+    proto = proxy.protocol.lower() if proxy.protocol else "socks5"
+    if proto not in ("socks5", "socks4", "http"):
+        proto = "socks5"
+
     proxy_config: Dict[str, Any] = {
-        "proxy_type": proxy.protocol.lower(),
+        "proxy_type": proto,
         "addr": proxy.host,
         "port": proxy.port,
         "rdns": True,
@@ -25,7 +37,7 @@ def build_proxy_dict(proxy: Optional[Proxy]) -> Optional[Dict[str, Any]]:
     if proxy.username:
         proxy_config["username"] = proxy.username
     if proxy.password:
-        proxy_config["password"] = proxy.password
+        proxy_config["password"] = decrypt_proxy_password(proxy.password)
 
     return proxy_config
 

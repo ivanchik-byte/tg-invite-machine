@@ -66,7 +66,7 @@ async def callback_proxy_check(callback: CallbackQuery):
         proxies = (await session.execute(select(Proxy))).scalars().all()
 
     if not proxies:
-        await status_msg.edit_text("Список прокси пуст.", reply_markup=back_keyboard("nav_proxies"))
+        await safe_edit_text(status_msg, "Список прокси пуст.", reply_markup=back_keyboard("nav_proxies"))
         await callback.answer()
         return
 
@@ -88,12 +88,12 @@ async def callback_proxy_check(callback: CallbackQuery):
             failed += 1
 
         if idx % 5 == 0 or idx == len(proxies):
-            await status_msg.edit_text(f"Проверено {idx}/{len(proxies)} прокси...\nДоступно: {working}, Недоступно: {failed}")
+            await safe_edit_text(status_msg, f"Проверено {idx}/{len(proxies)} прокси...\nДоступно: {working}, Недоступно: {failed}")
 
     text = (
         f"Проверка прокси завершена.\n"
         f"Доступных: {working}\n"
         f"Недоступных: {failed}"
     )
-    await status_msg.edit_text(text, reply_markup=back_keyboard("nav_proxies"))
+    await safe_edit_text(status_msg, text, reply_markup=back_keyboard("nav_proxies"))
     await callback.answer()

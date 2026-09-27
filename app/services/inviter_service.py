@@ -143,6 +143,7 @@ class InviterOrchestrator:
                 )
                 await session.commit()
 
+                is_sqlite = "sqlite" in settings.DATABASE_URL
                 worker_query = select(Account).options(selectinload(Account.proxy)).where(
                     and_(
                         Account.is_active == True,
@@ -151,6 +152,9 @@ class InviterOrchestrator:
                         Account.daily_invites_count < settings.MAX_INVITES_PER_SESSION_DAILY
                     )
                 ).order_by(Account.last_invite_at.asc().nullsfirst()).limit(1)
+
+                if not is_sqlite:
+                    worker_query = worker_query.with_for_update(skip_locked=True)
 
                 active_account = (await session.execute(worker_query)).scalars().first()
                 if not active_account:
@@ -175,6 +179,10 @@ class InviterOrchestrator:
                         (AudienceMember.target_group_id == None) | (AudienceMember.target_group_id == target_group.id)
                     )
                 ).order_by(AudienceMember.id.asc()).limit(1)
+
+                if not is_sqlite:
+                    target_query = target_query.with_for_update(skip_locked=True)
+
                 target_member = (await session.execute(target_query)).scalars().first()
                 if not target_member:
                     task = await session.get(InviteTask, self.task_id)
@@ -322,4 +330,8 @@ class InviterOrchestrator:
                     )
 
             pause_time = calculate_delay(speed_profile)
-            await asyncio.sleep(pause_time)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=pause_time)
+                break
+            except asyncio.TimeoutError:
+                pass

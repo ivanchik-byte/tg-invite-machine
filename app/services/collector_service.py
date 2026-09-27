@@ -11,8 +11,10 @@ from telethon.tl.types import (
 )
 from telethon.tl.functions.channels import GetFullChannelRequest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import DATA_DIR
 from app.models.models import Account, AudienceMember
 from app.telegram.client_factory import get_telethon_client
 
@@ -120,10 +122,21 @@ async def collect_chat_members(
             new_saved += 1
 
         if new_members:
-            session.add_all(new_members)
-            await session.commit()
+            try:
+                session.add_all(new_members)
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                for member in new_members:
+                    try:
+                        session.add(member)
+                        await session.commit()
+                    except IntegrityError:
+                        await session.rollback()
+                        new_saved -= 1
+                        existing_skipped += 1
 
-        export_dir = Path("data/exports")
+        export_dir = DATA_DIR / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
         export_filename = export_dir / f"export_{int(datetime.now().timestamp())}.txt"
 
