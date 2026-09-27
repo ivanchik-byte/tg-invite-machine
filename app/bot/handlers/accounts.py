@@ -128,12 +128,17 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
             success, msg, info = await convert_tdata_archive(temp_target, proxy=single_proxy_dict)
             if not success and msg == PASSWORD_REQUIRED:
                 await state.set_state(AccountState.waiting_for_password)
-                await state.update_data(archive_path=str(temp_target))
-                await status_msg.edit_text("Для этой TData требуется пароль двухэтапной аутентификации. Введите его в ответном сообщении и удалите сообщение после отправки:")
+                await state.update_data(archive_path=str(temp_target), file_type="zip")
+                await status_msg.edit_text("Для этой TData требуется пароль двухэтапной аутентификации (2FA). Введите его в ответном сообщении:")
                 return
 
         elif expected_type == "session" or filename.lower().endswith(".session"):
             success, msg, info = await import_session_file(temp_target, proxy=single_proxy_dict)
+            if not success and msg == PASSWORD_REQUIRED:
+                await state.set_state(AccountState.waiting_for_password)
+                await state.update_data(archive_path=str(temp_target), file_type="session")
+                await status_msg.edit_text("Для этой сессии требуется пароль двухэтапной аутентификации (2FA). Введите его в ответном сообщении:")
+                return
         else:
             await state.clear()
             await status_msg.edit_text("Неподдерживаемый формат файла. Отправьте .zip архив с tdata или .session файл.")
@@ -167,7 +172,7 @@ async def handle_account_password(message: Message, state: FSMContext):
     archive_path = state_data.get("archive_path")
     if not archive_path or not Path(archive_path).exists():
         await state.clear()
-        await message.answer("Файл архива не найден, повторите загрузку заново.", reply_markup=back_keyboard("nav_accounts"))
+        await message.answer("Файл сессии не найден, повторите загрузку заново.", reply_markup=back_keyboard("nav_accounts"))
         return
 
     password = message.text.strip()
@@ -192,15 +197,20 @@ async def handle_account_password(message: Message, state: FSMContext):
 
     proxy_dict = build_proxy_dict(active_proxy) if active_proxy else None
     chosen_proxy_id = active_proxy.id if active_proxy else None
+    file_type = state_data.get("file_type", "zip")
 
-    success, msg, info = await convert_tdata_archive(Path(archive_path), password=password, proxy=proxy_dict)
+    if file_type == "session":
+        success, msg, info = await import_session_file(Path(archive_path), password=password, proxy=proxy_dict)
+    else:
+        success, msg, info = await convert_tdata_archive(Path(archive_path), password=password, proxy=proxy_dict)
+
     if not success or not info:
         attempts = state_data.get("attempts", 0) + 1
         if attempts >= 3:
             Path(archive_path).unlink(missing_ok=True)
             await state.clear()
             await status_msg.edit_text(
-                f"Ошибка авторизации: {quote_html(msg or '')}\nПревышено количество попыток. Загрузите архив заново.",
+                f"Ошибка авторизации: {quote_html(msg or '')}\nПревышено количество попыток. Загрузите файл заново.",
                 reply_markup=back_keyboard("nav_accounts")
             )
             return
@@ -214,7 +224,12 @@ async def handle_account_password(message: Message, state: FSMContext):
 
     try:
         async with async_session_factory() as session:
-            acc, is_new = await register_single_account(session, info, proxy_id=chosen_proxy_id)
+            acc, is_new = await register_single_account(
+                session,
+                info,
+                proxy_id=chosen_proxy_id,
+                two_fa_password=password
+            )
             if is_new:
                 response_text = f"Аккаунт {quote_html(info['phone'])} успешно авторизован и сохранен."
             else:

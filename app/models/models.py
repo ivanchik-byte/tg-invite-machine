@@ -52,6 +52,7 @@ class Account(Base):
     proxy_id: Mapped[Optional[int]] = mapped_column(ForeignKey("proxies.id", ondelete="SET NULL"), nullable=True)
     proxy: Mapped[Optional[Proxy]] = relationship("Proxy", back_populates="accounts")
 
+    two_fa_password: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     daily_invites_count: Mapped[int] = mapped_column(Integer, default=0)
     last_invite_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     cooldown_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
@@ -112,6 +113,7 @@ class InviteTask(Base):
     target_group_id: Mapped[int] = mapped_column(ForeignKey("target_groups.id", ondelete="CASCADE"), nullable=False)
     speed_profile: Mapped[str] = mapped_column(String(32), default="normal")
     status: Mapped[str] = mapped_column(String(32), default="pending")
+    max_invites: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_targets: Mapped[int] = mapped_column(Integer, default=0)
     successful_invites: Mapped[int] = mapped_column(Integer, default=0)
     restricted_count: Mapped[int] = mapped_column(Integer, default=0)

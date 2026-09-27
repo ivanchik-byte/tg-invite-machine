@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import safe_extract_zip
+from app.core.security import safe_extract_zip, encrypt_session_string
 from app.models.models import Account, Proxy
 from app.services.proxy_service import import_proxies_from_text
 from app.telegram.client_factory import build_proxy_dict, ProxySecurityError
@@ -23,12 +23,16 @@ class ImportBundleResult:
 async def register_single_account(
     session: AsyncSession,
     info: Dict[str, Any],
-    proxy_id: Optional[int] = None
+    proxy_id: Optional[int] = None,
+    two_fa_password: Optional[str] = None
 ) -> Tuple[Account, bool]:
     phone = info["phone"]
     existing = (await session.execute(
         select(Account).where(Account.phone == phone)
     )).scalars().first()
+
+    raw_2fa = two_fa_password or info.get("two_fa_password")
+    encrypted_2fa = encrypt_session_string(raw_2fa) if raw_2fa else None
 
     if existing:
         existing.session_encrypted = info["session_encrypted"]
@@ -37,6 +41,8 @@ async def register_single_account(
         existing.username = info.get("username")
         existing.status = "active"
         existing.is_active = True
+        if encrypted_2fa:
+            existing.two_fa_password = encrypted_2fa
         if proxy_id:
             existing.proxy_id = proxy_id
         await session.commit()
@@ -45,6 +51,7 @@ async def register_single_account(
     acc = Account(
         phone=phone,
         session_encrypted=info["session_encrypted"],
+        two_fa_password=encrypted_2fa,
         first_name=info.get("first_name"),
         last_name=info.get("last_name"),
         username=info.get("username"),

@@ -36,12 +36,22 @@ TaskUpdateCallback = Callable[..., Awaitable[None]]
 def calculate_delay(speed_profile: str) -> float:
     base_min = settings.MIN_DELAY_BETWEEN_INVITES
     base_max = settings.MAX_DELAY_BETWEEN_INVITES
-    profile_bounds = {
-        "cautious": (base_min * 1.5, base_max * 1.5),
-        "normal": (base_min, base_max),
-        "fast": (max(10, base_min * 0.5), max(20, base_max * 0.5))
-    }
-    min_pause, max_pause = profile_bounds.get(speed_profile, (base_min, base_max))
+    if speed_profile.startswith("custom:"):
+        try:
+            parts = speed_profile.split(":")
+            min_pause = float(parts[1])
+            max_pause = float(parts[2])
+            if min_pause > max_pause:
+                min_pause, max_pause = max_pause, min_pause
+        except (ValueError, IndexError):
+            min_pause, max_pause = base_min, base_max
+    else:
+        profile_bounds = {
+            "cautious": (base_min * 1.5, base_max * 1.5),
+            "normal": (base_min, base_max),
+            "fast": (max(10, base_min * 0.5), max(20, base_max * 0.5))
+        }
+        min_pause, max_pause = profile_bounds.get(speed_profile, (base_min, base_max))
     roll = random.random()
     if roll < 0.25:
         return random.uniform(min_pause * 0.7, min_pause)
@@ -198,6 +208,24 @@ class InviterOrchestrator:
                 )
                 await session.commit()
 
+                task = await session.get(InviteTask, self.task_id)
+                if not task:
+                    break
+                if task.max_invites and task.successful_invites >= task.max_invites:
+                    task.status = "completed"
+                    task.finished_at = now
+                    await session.commit()
+                    if progress_callback:
+                        await progress_callback(
+                            self.task_id,
+                            task.successful_invites,
+                            task.total_targets,
+                            task.flood_errors,
+                            f"Заданный лимит инвайтов ({task.max_invites}) успешно достигнут.",
+                            is_final=True
+                        )
+                    break
+
                 is_sqlite = "sqlite" in settings.DATABASE_URL
                 worker_query = select(Account).options(selectinload(Account.proxy)).where(
                     and_(
@@ -351,6 +379,9 @@ class InviterOrchestrator:
                         db_account.record_invite(now)
                     if task:
                         task.successful_invites += 1
+                        if task.max_invites and task.successful_invites >= task.max_invites:
+                            task.status = "completed"
+                            task.finished_at = now
                 else:
                     if db_member:
                         if error_status == "account_banned":
@@ -376,6 +407,18 @@ class InviterOrchestrator:
                 except asyncio.CancelledError:
                     await session.commit()
                     raise
+
+                if task and task.status == "completed":
+                    if progress_callback:
+                        await progress_callback(
+                            self.task_id,
+                            task.successful_invites,
+                            task.total_targets,
+                            task.flood_errors,
+                            f"Заданный лимит инвайтов ({task.max_invites}) успешно достигнут.",
+                            is_final=True
+                        )
+                    break
 
                 if error_status == "no_rights":
                     if task:

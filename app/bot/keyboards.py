@@ -1,3 +1,4 @@
+from typing import Optional
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -94,8 +95,57 @@ def speed_profile_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="Быстрый (17-37с)", callback_data="set_speed_fast")
     )
     builder.row(
+        InlineKeyboardButton(text="Свой интервал", callback_data="set_speed_custom")
+    )
+    builder.row(
         InlineKeyboardButton(text="Назад", callback_data="nav_inviter")
     )
+    return builder.as_markup()
+
+def inviter_config_keyboard(selected_limit: Optional[int], current_profile: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+
+    chips = [5, 10, 20, 50]
+    limit_buttons = []
+    for val in chips:
+        mark = "• " if selected_limit == val else ""
+        limit_buttons.append(
+            InlineKeyboardButton(text=f"{mark}{val}", callback_data=f"cfg_limit_{val}")
+        )
+    all_mark = "• " if selected_limit is None else ""
+    limit_buttons.append(
+        InlineKeyboardButton(text=f"{all_mark}Все", callback_data="cfg_limit_all")
+    )
+    builder.row(*limit_buttons)
+
+    custom_limit_label = (
+        f"• Свой лимит: {selected_limit}"
+        if (selected_limit is not None and selected_limit not in chips)
+        else "Свой лимит"
+    )
+    builder.row(InlineKeyboardButton(text=custom_limit_label, callback_data="cfg_limit_custom"))
+
+    c_mark = "• " if current_profile == "cautious" else ""
+    n_mark = "• " if current_profile == "normal" else ""
+    f_mark = "• " if current_profile == "fast" else ""
+    builder.row(
+        InlineKeyboardButton(text=f"{c_mark}Осторожный (50-110с)", callback_data="cfg_speed_cautious"),
+        InlineKeyboardButton(text=f"{n_mark}Обычный (35-75с)", callback_data="cfg_speed_normal"),
+        InlineKeyboardButton(text=f"{f_mark}Быстрый (17-37с)", callback_data="cfg_speed_fast"),
+    )
+
+    custom_speed_mark = "• " if current_profile.startswith("custom:") else ""
+    clean_range = current_profile.replace("custom:", "").replace(":", "-")
+    custom_speed_text = (
+        f"{custom_speed_mark}Свой интервал: {clean_range}с"
+        if current_profile.startswith("custom:")
+        else "Свой интервал"
+    )
+    builder.row(InlineKeyboardButton(text=custom_speed_text, callback_data="cfg_speed_custom"))
+
+    builder.row(InlineKeyboardButton(text="Запустить инвайтинг", callback_data="cfg_launch"))
+    builder.row(InlineKeyboardButton(text="Отмена", callback_data="cfg_cancel"))
+
     return builder.as_markup()
 
 def back_keyboard(callback_target: str = "nav_main") -> InlineKeyboardMarkup:

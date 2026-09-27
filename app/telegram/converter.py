@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 from telethon.sessions import StringSession
 from telethon import TelegramClient
+from telethon.errors import SessionPasswordNeededError
 from opentele2.td import TDesktop
 from opentele2.api import CreateNewSession
 
@@ -13,10 +14,14 @@ from app.core.config import settings
 from app.core.security import safe_extract_zip, encrypt_session_string
 from app.telegram.client_factory import ProxySecurityError
 
-# returned as msg when the tdata archive needs a 2fa password
+# returned as msg when the tdata archive or session needs a 2fa password
 PASSWORD_REQUIRED = "tdata_password_required"
 
-async def import_session_file(session_path: Path, proxy: Optional[Dict[str, Any]] = None) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+async def import_session_file(
+    session_path: Path,
+    password: Optional[str] = None,
+    proxy: Optional[Dict[str, Any]] = None
+) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     if settings.REQUIRE_STRICT_PROXIES and not proxy:
         raise ProxySecurityError("Zero-leak policy: Active proxy is required for account import")
 
@@ -30,7 +35,13 @@ async def import_session_file(session_path: Path, proxy: Optional[Dict[str, Any]
     try:
         await client.connect()
         if not await client.is_user_authorized():
-            return False, "Сессия не авторизована или отозвана в Telegram", None
+            if password:
+                try:
+                    await client.sign_in(password=password)
+                except Exception as sign_in_err:
+                    return False, f"Ошибка 2FA пароля: {sign_in_err}", None
+            else:
+                return False, "Сессия не авторизована или отозвана в Telegram", None
 
         user = await client.get_me()
         session_string = StringSession.save(client.session)
@@ -41,10 +52,15 @@ async def import_session_file(session_path: Path, proxy: Optional[Dict[str, Any]
             "first_name": getattr(user, "first_name", None),
             "last_name": getattr(user, "last_name", None),
             "username": getattr(user, "username", None),
-            "session_encrypted": encrypted_token
+            "session_encrypted": encrypted_token,
+            "two_fa_password": password
         }
         return True, "Успешно", user_info
+    except SessionPasswordNeededError:
+        return False, PASSWORD_REQUIRED, None
     except Exception as exc:
+        if "password" in str(exc).lower():
+            return False, PASSWORD_REQUIRED, None
         return False, f"Ошибка чтения сессии: {exc}", None
     finally:
         await client.disconnect()
@@ -96,7 +112,8 @@ async def convert_tdata_archive(
                 "first_name": getattr(user, "first_name", None),
                 "last_name": getattr(user, "last_name", None),
                 "username": getattr(user, "username", None),
-                "session_encrypted": encrypted_token
+                "session_encrypted": encrypted_token,
+                "two_fa_password": password
             }
             return True, "Успешно", account_info
         finally:

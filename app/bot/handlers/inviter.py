@@ -1,5 +1,6 @@
 import asyncio
 import time
+from typing import Optional
 from datetime import datetime, timezone
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
@@ -14,7 +15,13 @@ from app.core.config import settings
 from app.core.database import async_session_factory
 from app.models.models import Account, AudienceMember, TargetGroup, InviteTask
 from app.bot.states import InviterState
-from app.bot.keyboards import inviter_menu_keyboard, speed_profile_keyboard, back_keyboard, migrate_confirm_keyboard
+from app.bot.keyboards import (
+    inviter_menu_keyboard,
+    speed_profile_keyboard,
+    inviter_config_keyboard,
+    back_keyboard,
+    migrate_confirm_keyboard,
+)
 from app.services.inviter_service import InviterOrchestrator
 from app.services.task_manager import invite_task_manager
 from app.telegram.client_factory import get_telethon_client
@@ -43,10 +50,11 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
         )).scalar_one()
 
     status_line = "Запущен" if is_running else "Остановлен"
+    speed_label = settings.DEFAULT_SPEED_PROFILE.replace("custom:", "свой: ") if settings.DEFAULT_SPEED_PROFILE.startswith("custom:") else settings.DEFAULT_SPEED_PROFILE
     text = (
         "Управление инвайтером.\n\n"
         f"Текущее состояние: {status_line}\n"
-        f"Профиль скорости: {settings.DEFAULT_SPEED_PROFILE}\n"
+        f"Профиль скорости: {speed_label}\n"
         f"Пользователей в очереди: {pending_count}\n"
         f"Готовых аккаунтов: {active_accounts}\n"
     )
@@ -59,7 +67,8 @@ async def callback_invite_speed(callback: CallbackQuery):
         "Выберите профиль скорости инвайта:\n\n"
         "Осторожный (50-110 сек): минимальный риск, для свежих аккаунтов.\n"
         "Обычный (35-75 сек): рекомендуемый баланс скорости и надежности.\n"
-        "Быстрый (17-37 сек): повышенная скорость, для прогретых аккаунтов."
+        "Быстрый (17-37 сек): повышенная скорость, для прогретых аккаунтов.\n"
+        "Свой интервал: ручная настройка диапазона задержки."
     )
     await safe_edit_text(callback.message, text, reply_markup=speed_profile_keyboard())
     await callback.answer()
@@ -67,6 +76,16 @@ async def callback_invite_speed(callback: CallbackQuery):
 @inviter_router.callback_query(F.data.startswith("set_speed_"))
 async def callback_set_speed(callback: CallbackQuery, state: FSMContext):
     profile = callback.data.replace("set_speed_", "")
+    if profile == "custom":
+        await state.set_state(InviterState.waiting_for_custom_delay)
+        await state.update_data(source="main_menu")
+        await callback.message.edit_text(
+            "Введите диапазон задержки между инвайтами в секундах (например: 40-80):",
+            reply_markup=back_keyboard("nav_inviter")
+        )
+        await callback.answer()
+        return
+
     if profile not in VALID_SPEED_PROFILES:
         await callback.answer("Недопустимый профиль скорости.", show_alert=True)
         return
@@ -193,7 +212,15 @@ async def handle_target_group(message: Message, state: FSMContext, bot: Bot):
             reply_markup=migrate_confirm_keyboard())
         return
 
-    await _create_and_launch_task(target_group_id, target_link, chat_type, state, bot, status_msg)
+    await _show_pre_launch_config(
+        status_msg,
+        state,
+        target_group_id,
+        target_link,
+        chat_type,
+        selected_limit=20,
+        speed_profile=settings.DEFAULT_SPEED_PROFILE
+    )
 
 
 @inviter_router.callback_query(F.data == "migrate_confirm")
@@ -246,7 +273,15 @@ async def callback_migrate_confirm(callback: CallbackQuery, state: FSMContext, b
             await client.disconnect()
 
     await callback.answer("Группа мигрирована в супергруппу.")
-    await _create_and_launch_task(target_group_id, target_link, chat_type, state, bot, callback.message)
+    await _show_pre_launch_config(
+        callback.message,
+        state,
+        target_group_id,
+        target_link,
+        chat_type,
+        selected_limit=20,
+        speed_profile=settings.DEFAULT_SPEED_PROFILE
+    )
 
 
 @inviter_router.callback_query(F.data == "migrate_cancel")
@@ -258,8 +293,266 @@ async def callback_migrate_cancel(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-async def _create_and_launch_task(target_group_id: int, target_link: str, chat_type: str,
-                                 state: FSMContext, bot: Bot, status_msg: Message):
+async def _show_pre_launch_config(
+    message: Message,
+    state: FSMContext,
+    target_group_id: int,
+    target_link: str,
+    chat_type: str,
+    selected_limit: Optional[int] = 20,
+    speed_profile: Optional[str] = None
+):
+    profile = speed_profile or settings.DEFAULT_SPEED_PROFILE
+    await state.update_data(
+        target_group_id=target_group_id,
+        target_link=target_link,
+        chat_type=chat_type,
+        selected_limit=selected_limit,
+        speed_profile=profile
+    )
+    type_label = TARGET_TYPE_LABELS.get(chat_type, "сообщество")
+    limit_text = str(selected_limit) if selected_limit is not None else "Все доступные"
+
+    if profile.startswith("custom:"):
+        speed_text = f"Свой интервал ({profile.replace('custom:', '')}с)"
+    elif profile == "cautious":
+        speed_text = "Осторожный (50-110с)"
+    elif profile == "fast":
+        speed_text = "Быстрый (17-37с)"
+    else:
+        speed_text = "Обычный (35-75с)"
+
+    text = (
+        "Параметры инвайтинга:\n\n"
+        f"Цель: {quote_html(target_link)} ({type_label})\n"
+        f"Лимит участников: {limit_text}\n"
+        f"Режим скорости: {speed_text}\n\n"
+        "Настройте лимит и интервалы кнопками ниже и запустите задачу:"
+    )
+    keyboard = inviter_config_keyboard(selected_limit=selected_limit, current_profile=profile)
+    await safe_edit_text(message, text, reply_markup=keyboard)
+
+
+@inviter_router.callback_query(F.data.startswith("cfg_limit_"))
+async def callback_cfg_limit(callback: CallbackQuery, state: FSMContext):
+    limit_str = callback.data.replace("cfg_limit_", "")
+    data = await state.get_data()
+    target_group_id = data.get("target_group_id")
+    target_link = data.get("target_link", "")
+    chat_type = data.get("chat_type", "supergroup")
+    speed_profile = data.get("speed_profile", settings.DEFAULT_SPEED_PROFILE)
+
+    if limit_str == "custom":
+        await state.set_state(InviterState.waiting_for_invite_limit)
+        await callback.message.edit_text(
+            "Введите число участников для инвайта (от 1 до 5000):\nНапример: 15",
+            reply_markup=back_keyboard("cfg_return")
+        )
+        await callback.answer()
+        return
+
+    if limit_str == "all":
+        selected_limit = None
+    else:
+        try:
+            selected_limit = int(limit_str)
+        except ValueError:
+            selected_limit = 20
+
+    await _show_pre_launch_config(
+        callback.message,
+        state,
+        target_group_id,
+        target_link,
+        chat_type,
+        selected_limit=selected_limit,
+        speed_profile=speed_profile
+    )
+    await callback.answer()
+
+
+@inviter_router.callback_query(F.data.startswith("cfg_speed_"))
+async def callback_cfg_speed(callback: CallbackQuery, state: FSMContext):
+    speed_val = callback.data.replace("cfg_speed_", "")
+    data = await state.get_data()
+    target_group_id = data.get("target_group_id")
+    target_link = data.get("target_link", "")
+    chat_type = data.get("chat_type", "supergroup")
+    selected_limit = data.get("selected_limit", 20)
+
+    if speed_val == "custom":
+        await state.set_state(InviterState.waiting_for_custom_delay)
+        await state.update_data(source="task_config")
+        await callback.message.edit_text(
+            "Введите диапазон задержки между инвайтами в секундах (например: 40-80):",
+            reply_markup=back_keyboard("cfg_return")
+        )
+        await callback.answer()
+        return
+
+    await _show_pre_launch_config(
+        callback.message,
+        state,
+        target_group_id,
+        target_link,
+        chat_type,
+        selected_limit=selected_limit,
+        speed_profile=speed_val
+    )
+    await callback.answer()
+
+
+@inviter_router.callback_query(F.data == "cfg_return")
+async def callback_cfg_return(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    target_group_id = data.get("target_group_id")
+    target_link = data.get("target_link", "")
+    chat_type = data.get("chat_type", "supergroup")
+    selected_limit = data.get("selected_limit", 20)
+    speed_profile = data.get("speed_profile", settings.DEFAULT_SPEED_PROFILE)
+    await _show_pre_launch_config(
+        callback.message,
+        state,
+        target_group_id,
+        target_link,
+        chat_type,
+        selected_limit=selected_limit,
+        speed_profile=speed_profile
+    )
+    await callback.answer()
+
+
+@inviter_router.callback_query(F.data == "cfg_cancel")
+async def callback_cfg_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback_nav_inviter(callback, state)
+
+
+@inviter_router.message(InviterState.waiting_for_invite_limit, F.text)
+async def handle_custom_limit(message: Message, state: FSMContext):
+    raw_val = message.text.strip()
+    try:
+        limit_val = int(raw_val)
+        if limit_val <= 0 or limit_val > 5000:
+            raise ValueError()
+    except ValueError:
+        await message.answer(
+            "Пожалуйста, введите корректное число от 1 до 5000:\nНапример: 15",
+            reply_markup=back_keyboard("cfg_return")
+        )
+        return
+
+    data = await state.get_data()
+    target_group_id = data.get("target_group_id")
+    target_link = data.get("target_link", "")
+    chat_type = data.get("chat_type", "supergroup")
+    speed_profile = data.get("speed_profile", settings.DEFAULT_SPEED_PROFILE)
+
+    status_msg = await message.answer("Обновление настроек...")
+    await _show_pre_launch_config(
+        status_msg,
+        state,
+        target_group_id,
+        target_link,
+        chat_type,
+        selected_limit=limit_val,
+        speed_profile=speed_profile
+    )
+
+
+@inviter_router.message(InviterState.waiting_for_custom_delay, F.text)
+async def handle_custom_delay(message: Message, state: FSMContext):
+    raw_val = message.text.strip().replace(":", "-").replace(" ", "-")
+    parts = [p.strip() for p in raw_val.split("-") if p.strip()]
+    if len(parts) == 1:
+        parts = [parts[0], parts[0]]
+    valid = False
+    min_pause, max_pause = 0.0, 0.0
+    if len(parts) == 2:
+        try:
+            min_pause = float(parts[0])
+            max_pause = float(parts[1])
+            if min_pause > max_pause:
+                min_pause, max_pause = max_pause, min_pause
+            if 5.0 <= min_pause and max_pause <= 600.0:
+                valid = True
+        except ValueError:
+            valid = False
+
+    if not valid:
+        await message.answer(
+            "Пожалуйста, введите корректный диапазон от 5 до 600 секунд (например: 40-80):",
+            reply_markup=back_keyboard("cfg_return")
+        )
+        return
+
+    custom_profile = f"custom:{int(min_pause)}:{int(max_pause)}"
+    data = await state.get_data()
+    source = data.get("source", "task_config")
+
+    if source == "main_menu":
+        settings.DEFAULT_SPEED_PROFILE = custom_profile
+        await state.clear()
+        await message.answer(
+            f"Установлен профиль по умолчанию: {int(min_pause)}-{int(max_pause)} сек.",
+            reply_markup=back_keyboard("nav_inviter")
+        )
+        return
+
+    target_group_id = data.get("target_group_id")
+    target_link = data.get("target_link", "")
+    chat_type = data.get("chat_type", "supergroup")
+    selected_limit = data.get("selected_limit", 20)
+
+    status_msg = await message.answer("Обновление настроек...")
+    await _show_pre_launch_config(
+        status_msg,
+        state,
+        target_group_id,
+        target_link,
+        chat_type,
+        selected_limit=selected_limit,
+        speed_profile=custom_profile
+    )
+
+
+@inviter_router.callback_query(F.data == "cfg_launch")
+async def callback_cfg_launch(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    target_group_id = data.get("target_group_id")
+    target_link = data.get("target_link", "")
+    chat_type = data.get("chat_type", "supergroup")
+    selected_limit = data.get("selected_limit", 20)
+    speed_profile = data.get("speed_profile", settings.DEFAULT_SPEED_PROFILE)
+
+    if not target_group_id or not target_link:
+        await callback.answer("Ошибка: данные задачи устарели. Начните заново.", show_alert=True)
+        await callback_nav_inviter(callback, state)
+        return
+
+    await _create_and_launch_task(
+        target_group_id=target_group_id,
+        target_link=target_link,
+        chat_type=chat_type,
+        selected_limit=selected_limit,
+        speed_profile=speed_profile,
+        state=state,
+        bot=bot,
+        status_msg=callback.message
+    )
+    await callback.answer()
+
+
+async def _create_and_launch_task(
+    target_group_id: int,
+    target_link: str,
+    chat_type: str,
+    selected_limit: Optional[int],
+    speed_profile: str,
+    state: FSMContext,
+    bot: Bot,
+    status_msg: Message
+):
     global active_orchestrator, active_task_handle, active_task_id, last_ui_update_time
 
     type_label = TARGET_TYPE_LABELS.get(chat_type, "чат")
@@ -272,7 +565,8 @@ async def _create_and_launch_task(target_group_id: int, target_link: str, chat_t
 
         task = InviteTask(
             target_group_id=target_group_id,
-            speed_profile=settings.DEFAULT_SPEED_PROFILE,
+            speed_profile=speed_profile,
+            max_invites=selected_limit,
             status="running",
             total_targets=pending_total
         )
@@ -290,9 +584,10 @@ async def _create_and_launch_task(target_group_id: int, target_link: str, chat_t
         if not invite_task_manager.should_update_ui(min_interval=3.0, is_final=is_final):
             return
 
+        limit_suffix = f"из {selected_limit}" if selected_limit else f"из {total}"
         ui_text = (
             f"Инвайтинг в {quote_html(target_link)}:\n\n"
-            f"Приглашено: {invited} из {total}\n"
+            f"Приглашено: {invited} {limit_suffix}\n"
             f"Флуд-пауз: {floods}\n"
             f"Статус: {quote_html(status_text)}"
         )
@@ -315,8 +610,13 @@ async def _create_and_launch_task(target_group_id: int, target_link: str, chat_t
         )
     )
 
+    limit_desc = f"Лимит: {selected_limit}" if selected_limit else "Лимит: без ограничений"
+    speed_desc = f"Профиль: {speed_profile.replace('custom:', '')}с" if speed_profile.startswith("custom:") else f"Профиль: {speed_profile}"
     await status_msg.edit_text(
-        f"Задача #{active_task_id} запущена.\nЦелевой {type_label}: {quote_html(target_link)}\nПрофиль: {settings.DEFAULT_SPEED_PROFILE}",
+        f"Задача #{active_task_id} запущена.\n"
+        f"Целевой {type_label}: {quote_html(target_link)}\n"
+        f"{limit_desc}\n"
+        f"{speed_desc}",
         reply_markup=inviter_menu_keyboard(task_running=True)
     )
 
