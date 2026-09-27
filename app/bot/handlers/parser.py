@@ -25,11 +25,24 @@ async def callback_nav_parser(callback: CallbackQuery, state: FSMContext):
         pending_count = (await session.execute(
             select(func.count(AudienceMember.id)).where(AudienceMember.status == "pending")
         )).scalar_one()
+        invited_count = (await session.execute(
+            select(func.count(AudienceMember.id)).where(AudienceMember.status == "invited")
+        )).scalar_one()
+        restricted_count = (await session.execute(
+            select(func.count(AudienceMember.id)).where(AudienceMember.status == "restricted")
+        )).scalar_one()
 
     text = (
-        "Сбор активной аудитории из каналов и чатов.\n\n"
-        f"Пользователей в базе, готовых к инвайту: {pending_count}\n\n"
-        "Выберите режим сбора участников ниже:"
+        "<b>TG-INVITE-MACHINE | Модуль сбора аудитории</b>\n"
+        "────────────────────────\n"
+        f"<b>Текущая база контактов:</b> <code>{pending_count + invited_count + restricted_count}</code> чел.\n"
+        f"• <b>Ожидают инвайта:</b> <code>{pending_count}</code> чел.\n"
+        f"• <b>Успешно добавлено:</b> <code>{invited_count}</code> чел.\n"
+        f"• <b>Приватные профили:</b> <code>{restricted_count}</code> чел.\n\n"
+        "<b>Доступные режимы сбора:</b>\n"
+        "• <b>Все участники:</b> перебор по алфавиту (обход лимита Telegram в 10,000)\n"
+        "• <b>Активные авторы:</b> парсинг пользователей по истории сообщений за 1-30 дней\n\n"
+        "<blockquote>Сбор возможен только из открытых групп или супергрупп, где список участников не скрыт администрацией.</blockquote>"
     )
     await safe_edit_text(callback.message, text, reply_markup=parser_menu_keyboard())
     await callback.answer()
@@ -39,8 +52,11 @@ async def callback_parse_all(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ParserState.waiting_for_chat)
     await state.update_data(mode="all")
     text = (
-        "Введите ссылку или @username открытого чата/канала для сбора участников:\n"
-        "Например: @python_chat или https://t.me/example_group"
+        "<b>Сбор всех участников супергруппы</b>\n"
+        "────────────────────────\n"
+        "Введите ссылку или @username открытого чата/канала:\n\n"
+        "<i>Пример:</i> <code>@python_community</code> или <code>https://t.me/example_group</code>\n\n"
+        "<i>Для отмены отправьте /cancel или нажмите «Назад».</i>"
     )
     await safe_edit_text(callback.message, text, reply_markup=back_keyboard("nav_parser"))
     await callback.answer()
@@ -50,8 +66,11 @@ async def callback_parse_active(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ParserState.waiting_for_chat)
     await state.update_data(mode="active")
     text = (
-        "Введите ссылку или @username чата для сбора активных авторов сообщений:\n"
-        "Например: @tech_community или https://t.me/tech_community"
+        "<b>Сбор активных авторов сообщений</b>\n"
+        "────────────────────────\n"
+        "Введите ссылку или @username чата для анализа активности:\n\n"
+        "<i>Пример:</i> <code>@tech_community</code> или <code>https://t.me/tech_community</code>\n\n"
+        "<i>Для отмены отправьте /cancel или нажмите «Назад».</i>"
     )
     await safe_edit_text(callback.message, text, reply_markup=back_keyboard("nav_parser"))
     await callback.answer()

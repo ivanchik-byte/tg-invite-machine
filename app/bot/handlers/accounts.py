@@ -34,11 +34,28 @@ async def callback_nav_accounts(callback: CallbackQuery, state: FSMContext | Non
         await state.clear()
     async with async_session_factory() as session:
         count = (await session.execute(select(func.count(Account.id)))).scalar_one()
+        active = (await session.execute(
+            select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
+        )).scalar_one()
+        cooldown = (await session.execute(
+            select(func.count(Account.id)).where(Account.status == "cooldown")
+        )).scalar_one()
+        banned = (await session.execute(
+            select(func.count(Account.id)).where(Account.status == "banned")
+        )).scalar_one()
 
     text = (
-        f"Управление аккаунтами Telegram.\n"
-        f"Текущее количество в базе: {count} шт.\n\n"
-        "Отправьте архив TData в формате .zip или одиночный файл .session прямо в чат."
+        "<b>TG-INVITE-MACHINE | Управление пулом сессий</b>\n"
+        "────────────────────────\n"
+        f"<b>Всего в базе данных:</b> <code>{count}</code> аккаунтов\n"
+        f"• <b>Готовы к работе:</b> <code>{active}</code>\n"
+        f"• <b>В режиме отлежки (FloodWait):</b> <code>{cooldown}</code>\n"
+        f"• <b>Заблокированы:</b> <code>{banned}</code>\n\n"
+        "<b>Способы загрузки:</b>\n"
+        "Отправьте документ в чат:\n"
+        "• <code>.session</code> - файл сессии Telethon\n"
+        "• <code>.zip</code> - архив с папкой <code>tdata</code> Telegram Desktop\n\n"
+        "<blockquote>Все сессии хранятся в зашифрованном виде (Fernet). Для TData используется QR-login с изоляцией от десктопа.</blockquote>"
     )
     await safe_edit_text(callback.message, text, reply_markup=accounts_menu_keyboard(has_accounts=count > 0))
     await callback.answer()

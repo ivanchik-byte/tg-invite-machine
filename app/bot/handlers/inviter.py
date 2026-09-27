@@ -48,17 +48,33 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
         active_accounts = (await session.execute(
             select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
         )).scalar_one()
+        cooldown_accounts = (await session.execute(
+            select(func.count(Account.id)).where(Account.status == "cooldown")
+        )).scalar_one()
 
-    status_line = "Запущен" if is_running else "Остановлен"
+    orch = active_orchestrator or invite_task_manager.active_orchestrator
+    is_paused = getattr(orch, "is_paused", False)
+    if is_running and is_paused:
+        status_tag = "<code>[ PAUSED ] Инвайтинг на паузе</code>"
+    elif is_running:
+        status_tag = "<code>[ RUNNING ] Выполняется инвайтинг</code>"
+    else:
+        status_tag = "<code>[ IDLE ] Остановлен</code>"
+
     speed_label = settings.DEFAULT_SPEED_PROFILE.replace("custom:", "свой: ") if settings.DEFAULT_SPEED_PROFILE.startswith("custom:") else settings.DEFAULT_SPEED_PROFILE
+
     text = (
-        "Управление инвайтером.\n\n"
-        f"Текущее состояние: {status_line}\n"
-        f"Профиль скорости: {speed_label}\n"
-        f"Пользователей в очереди: {pending_count}\n"
-        f"Готовых аккаунтов: {active_accounts}\n"
+        "<b>TG-INVITE-MACHINE | Центр управления инвайтингом</b>\n"
+        "────────────────────────\n"
+        f"<b>Статус воркера:</b> {status_tag}\n\n"
+        "<b>Параметры очереди:</b>\n"
+        f"• <b>Пользователей в очереди:</b> <code>{pending_count}</code> чел.\n"
+        f"• <b>Готовых сессий:</b> <code>{active_accounts}</code> шт. (в отлежке: <code>{cooldown_accounts}</code>)\n"
+        f"• <b>Профиль скорости:</b> <code>{speed_label}</code>\n"
+        f"• <b>Алгоритм пауз:</b> <code>Тримодальное распределение</code>\n\n"
+        "<blockquote>При запуске бот проверит статус группы и запустит распределенный цикл с автоматической ротацией сессий при FloodWait.</blockquote>"
     )
-    await safe_edit_text(callback.message, text, reply_markup=inviter_menu_keyboard(task_running=is_running))
+    await safe_edit_text(callback.message, text, reply_markup=inviter_menu_keyboard(task_running=is_running, is_paused=is_paused))
     await callback.answer()
 
 @inviter_router.callback_query(F.data == "invite_speed")
@@ -584,12 +600,21 @@ async def _create_and_launch_task(
         if not invite_task_manager.should_update_ui(min_interval=3.0, is_final=is_final):
             return
 
-        limit_suffix = f"из {selected_limit}" if selected_limit else f"из {total}"
+        target_total = selected_limit if selected_limit else total
+        percent = min(1.0, max(0.0, invited / target_total)) if target_total > 0 else 0.0
+        bar_len = 10
+        filled = int(round(bar_len * percent))
+        bar = "█" * filled + "░" * (bar_len - filled)
+        prog_bar = f"[{bar}] {int(percent * 100)}%"
+
         ui_text = (
-            f"Инвайтинг в {quote_html(target_link)}:\n\n"
-            f"Приглашено: {invited} {limit_suffix}\n"
-            f"Флуд-пауз: {floods}\n"
-            f"Статус: {quote_html(status_text)}"
+            "<b>TG-INVITE-MACHINE | Мониторинг кампании</b>\n"
+            "────────────────────────\n"
+            f"<b>Целевой чат:</b> <code>{quote_html(target_link)}</code>\n"
+            f"<b>Прогресс:</b> <code>{prog_bar}</code> ({invited} / {target_total})\n"
+            f"• <b>Флуд-паузы:</b> <code>{floods}</code>\n"
+            f"• <b>Текущий статус:</b> <code>{quote_html(status_text)}</code>\n\n"
+            "<blockquote>Прогресс инвайтинга обновляется в реальном времени.</blockquote>"
         )
         try:
             await bot.edit_message_text(
@@ -610,13 +635,16 @@ async def _create_and_launch_task(
         )
     )
 
-    limit_desc = f"Лимит: {selected_limit}" if selected_limit else "Лимит: без ограничений"
-    speed_desc = f"Профиль: {speed_profile.replace('custom:', '')}с" if speed_profile.startswith("custom:") else f"Профиль: {speed_profile}"
+    limit_desc = f"{selected_limit} участников" if selected_limit else "Без ограничений (вся база)"
+    speed_desc = speed_profile.replace("custom:", "свой: ") if speed_profile.startswith("custom:") else speed_profile
     await status_msg.edit_text(
-        f"Задача #{active_task_id} запущена.\n"
-        f"Целевой {type_label}: {quote_html(target_link)}\n"
-        f"{limit_desc}\n"
-        f"{speed_desc}",
+        "<b>TG-INVITE-MACHINE | Запуск кампании</b>\n"
+        "────────────────────────\n"
+        f"<b>Статус:</b> <code>[ RUNNING ] Задача #{active_task_id} активна</code>\n\n"
+        f"• <b>Целевой объект:</b> <code>{quote_html(target_link)}</code> ({type_label})\n"
+        f"• <b>Установленный лимит:</b> <code>{limit_desc}</code>\n"
+        f"• <b>Профиль задержки:</b> <code>{speed_desc}</code>\n\n"
+        "<blockquote>Распределенный воркер начал обработку очереди.</blockquote>",
         reply_markup=inviter_menu_keyboard(task_running=True)
     )
 

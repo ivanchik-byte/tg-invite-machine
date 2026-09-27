@@ -13,7 +13,8 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="Инвайтер", callback_data="nav_inviter")
     )
     builder.row(
-        InlineKeyboardButton(text="Общая статистика", callback_data="nav_stats")
+        InlineKeyboardButton(text="Телеметрия", callback_data="nav_stats"),
+        InlineKeyboardButton(text="Обновить статус", callback_data="nav_main_refresh")
     )
     return builder.as_markup()
 

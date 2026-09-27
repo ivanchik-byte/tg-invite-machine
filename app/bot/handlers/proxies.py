@@ -3,8 +3,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select, func
 
+from app.core.config import settings
 from app.core.database import async_session_factory
-from app.models.models import Proxy
+from app.models.models import Proxy, Account
 from app.bot.states import ProxyState
 from app.bot.keyboards import proxies_menu_keyboard, back_keyboard
 from app.services.proxy_service import import_proxies_from_text, check_proxy_reachability
@@ -18,15 +19,26 @@ async def callback_nav_proxies(callback: CallbackQuery, state: FSMContext):
     async with async_session_factory() as session:
         total = (await session.execute(select(func.count(Proxy.id)))).scalar_one()
         active = (await session.execute(select(func.count(Proxy.id)).where(Proxy.is_active == True))).scalar_one()
+        active_accounts = (await session.execute(
+            select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
+        )).scalar_one()
+
+    policy_label = "Строгая изоляция (Zero-Leak)" if settings.FAIL_FAST_ON_PROXY_ERROR else "Тестовый режим (разрешено прямое IP)"
 
     text = (
-        "Управление сетевыми прокси (SOCKS5 / HTTP).\n\n"
-        f"Всего в пуле: {total}\n"
-        f"Активных: {active}\n\n"
-        "Поддерживаются форматы:\n"
-        "host:port:user:pass\n"
-        "host:port\n"
-        "socks5://user:pass@host:port"
+        "<b>TG-INVITE-MACHINE | Сетевой контур (Прокси)</b>\n"
+        "────────────────────────\n"
+        f"<b>Статус пула:</b> <code>[ OK ] {active} из {total} активны</code>\n"
+        f"• <b>Доступно для сессий:</b> <code>{active}</code> шт.\n"
+        f"• <b>Ошибки подключения:</b> <code>{total - active}</code> шт.\n"
+        f"• <b>Активных сессий в пуле:</b> <code>{active_accounts}</code> шт.\n"
+        f"• <b>Политика безопасности:</b> <code>{policy_label}</code>\n\n"
+        "<b>Синтаксис для добавления списком:</b>\n"
+        "<code>host:port:user:pass</code>\n"
+        "<code>host:port</code>\n"
+        "<code>socks5://user:pass@host:port</code>\n"
+        "<code>http://user:pass@host:port</code>\n\n"
+        "<blockquote>Рекомендуется использовать индивидуальный SOCKS5 IPv4 адрес для каждой сессии. Пароли шифруются.</blockquote>"
     )
     await safe_edit_text(callback.message, text, reply_markup=proxies_menu_keyboard())
     await callback.answer()
@@ -35,7 +47,14 @@ async def callback_nav_proxies(callback: CallbackQuery, state: FSMContext):
 async def callback_proxy_add(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ProxyState.waiting_for_input)
     text = (
-        "Отправьте список прокси текстом в ответном сообщении (каждый с новой строки):"
+        "<b>Добавление прокси списком</b>\n"
+        "────────────────────────\n"
+        "Отправьте список прокси текстом (каждый с новой строки):\n\n"
+        "<i>Пример форматов:</i>\n"
+        "<code>192.168.1.100:8000:proxyuser:strongpass</code>\n"
+        "<code>192.168.1.101:8080</code>\n"
+        "<code>socks5://user:pass@192.168.1.102:1080</code>\n\n"
+        "<i>Для отмены операции отправьте /cancel или нажмите «Назад».</i>"
     )
     await safe_edit_text(callback.message, text, reply_markup=back_keyboard("nav_proxies"))
     await callback.answer()
