@@ -1,3 +1,15 @@
+import os
+from pathlib import Path
+
+# Load test env before any app import so Settings() singleton passes validation
+_test_env = Path(__file__).parent.parent / ".env.test"
+if _test_env.exists():
+    for _line in _test_env.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+
 import pytest
 import pytest_asyncio
 from cryptography.fernet import Fernet

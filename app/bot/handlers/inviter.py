@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from html import escape as quote_html
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from telethon.tl.types import Channel, Chat
@@ -236,7 +237,7 @@ async def callback_migrate_confirm(callback: CallbackQuery, state: FSMContext, b
         except Exception as exc:
             await state.clear()
             await callback.message.edit_text(
-                f"Не получилось мигрировать: {exc}",
+                f"Не получилось мигрировать: {quote_html(str(exc))}",
                 reply_markup=back_keyboard("nav_inviter"))
             await callback.answer()
             return
@@ -292,10 +293,10 @@ async def _create_and_launch_task(target_group_id: int, target_link: str, chat_t
         last_ui_update_time = current_now
 
         ui_text = (
-            f"Инвайтинг в {target_link}:\n\n"
+            f"Инвайтинг в {quote_html(target_link)}:\n\n"
             f"Приглашено: {invited} из {total}\n"
             f"Флуд-пауз: {floods}\n"
-            f"Статус: {status_text}"
+            f"Статус: {quote_html(status_text)}"
         )
         try:
             await bot.edit_message_text(
@@ -315,7 +316,7 @@ async def _create_and_launch_task(target_group_id: int, target_link: str, chat_t
     )
 
     await status_msg.edit_text(
-        f"Задача #{active_task_id} запущена.\nЦелевой {type_label}: {target_link}\nПрофиль: {settings.DEFAULT_SPEED_PROFILE}",
+        f"Задача #{active_task_id} запущена.\nЦелевой {type_label}: {quote_html(target_link)}\nПрофиль: {settings.DEFAULT_SPEED_PROFILE}",
         reply_markup=inviter_menu_keyboard(task_running=True)
     )
 

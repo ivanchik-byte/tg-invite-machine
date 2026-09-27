@@ -116,12 +116,19 @@ async def test_safe_edit_text_raises_other_bad_request():
         await safe_edit_text(mock_msg, "Some text")
 
 def test_settings_delay_validator():
+    from cryptography.fernet import Fernet
     from app.core.config import Settings
+    _creds = dict(
+        BOT_TOKEN="0:test",
+        TELEGRAM_API_ID=1,
+        TELEGRAM_API_HASH="a" * 32,
+        ENCRYPTION_KEY=Fernet.generate_key().decode(),
+    )
     with pytest.raises(ValueError, match="MIN_DELAY_BETWEEN_INVITES cannot exceed MAX_DELAY_BETWEEN_INVITES"):
-        Settings(MIN_DELAY_BETWEEN_INVITES=100, MAX_DELAY_BETWEEN_INVITES=50)
+        Settings(MIN_DELAY_BETWEEN_INVITES=100, MAX_DELAY_BETWEEN_INVITES=50, **_creds)
 
     with pytest.raises(ValueError, match="Invalid DEFAULT_SPEED_PROFILE"):
-        Settings(DEFAULT_SPEED_PROFILE="turbo_unsafe")
+        Settings(DEFAULT_SPEED_PROFILE="turbo_unsafe", **_creds)
 
 def test_proxy_password_encryption_and_decryption():
     from app.core.security import encrypt_session_string

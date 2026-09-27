@@ -90,7 +90,10 @@ class InviterOrchestrator:
         async with session_factory() as session:
             await session.execute(
                 update(Account)
-                .where(Account.last_invite_at < today_start, Account.daily_invites_count > 0)
+                .where(
+                    (Account.last_invite_at < today_start) | (Account.last_invite_at == None),
+                    Account.daily_invites_count > 0,
+                )
                 .values(daily_invites_count=0)
             )
             await session.commit()
@@ -277,7 +280,7 @@ class InviterOrchestrator:
                 error_status = "skipped"
                 error_reason = "Пользователь не найден"
             except InviteRequestSentError:
-                error_status = "pending"
+                error_status = "awaiting_approval"
                 error_reason = "Отправлена заявка на вступление"
             except FloodWaitError as flood:
                 error_status = "flood_wait"
@@ -339,7 +342,11 @@ class InviterOrchestrator:
                         elif error_status in ("flood_wait", "peer_flood"):
                             task.flood_errors += 1
 
-                await session.commit()
+                try:
+                    await session.commit()
+                except asyncio.CancelledError:
+                    await session.commit()
+                    raise
 
                 if error_status == "no_rights":
                     if task:

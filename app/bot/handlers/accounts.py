@@ -4,6 +4,7 @@ from pathlib import Path
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, Document
+from html import escape as quote_html
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
@@ -17,8 +18,11 @@ from app.core.utils import safe_edit_text
 from app.telegram.converter import convert_tdata_archive, import_session_file, PASSWORD_REQUIRED
 from app.telegram.client_factory import get_telethon_client, decrypt_proxy_password
 from app.services.spambot_service import check_account_spambot
-from app.services.proxy_service import parse_proxy_line
+from app.services.proxy_service import import_proxies_from_text
 from app.services.export_service import generate_accounts_excel
+
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
+MAX_SESSION_FILES = 20
 
 accounts_router = Router()
 
@@ -63,6 +67,14 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
     state_data = await state.get_data()
     expected_type = state_data.get("expected_type")
 
+    if document.file_size and document.file_size > MAX_UPLOAD_BYTES:
+        await state.clear()
+        await message.answer(
+            f"Файл слишком большой (максимум {MAX_UPLOAD_BYTES // (1024 * 1024)} МБ).",
+            reply_markup=back_keyboard("nav_accounts")
+        )
+        return
+
     status_msg = await message.answer("Загрузка и обработка файла...")
     temp_target = TEMP_DIR / f"{document.file_id}_{filename}"
 
@@ -73,28 +85,19 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
             inspect_dir = Path(tempfile.mkdtemp(prefix="bundle_check_"))
             try:
                 safe_extract_zip(temp_target, inspect_dir)
-                session_files = list(inspect_dir.rglob("*.session"))
+                session_files = list(inspect_dir.rglob("*.session"))[:MAX_SESSION_FILES]
                 if len(session_files) > 1:
                     proxies_file = next(inspect_dir.rglob("*proxy*.txt"), None)
-                    available_proxies = []
+                    added_proxies = 0
                     if proxies_file:
-                        for line in proxies_file.read_text(encoding="utf-8").splitlines():
-                            parsed_p = parse_proxy_line(line)
-                            if parsed_p:
-                                available_proxies.append(parsed_p)
+                        async with async_session_factory() as session:
+                            added_proxies, _ = await import_proxies_from_text(
+                                session, proxies_file.read_text(encoding="utf-8")
+                            )
 
                     imported_count = 0
                     errors_count = 0
                     async with async_session_factory() as session:
-                        db_proxies = []
-                        for host, port, user, pwd, proto in available_proxies:
-                            enc_pwd = encrypt_session_string(pwd) if pwd else None
-                            p_obj = Proxy(host=host, port=port, username=user, password=enc_pwd, protocol=proto, is_active=True)
-                            session.add(p_obj)
-                            db_proxies.append(p_obj)
-                        if db_proxies:
-                            await session.commit()
-
                         existing_proxies = (await session.execute(select(Proxy).where(Proxy.is_active == True))).scalars().all()
 
                         for idx, s_path in enumerate(session_files):
@@ -142,7 +145,7 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                         f"Пакетный импорт архива завершен.\n"
                         f"Успешно добавлено сессий: {imported_count}\n"
                         f"Ошибок: {errors_count}\n"
-                        f"Привязано прокси: {len(db_proxies)} новых",
+                        f"Добавлено прокси: {added_proxies} новых",
                         reply_markup=back_keyboard("nav_accounts")
                     )
                     return
@@ -165,7 +168,7 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
 
         if not success or not info:
             await state.clear()
-            await status_msg.edit_text(f"Не удалось добавить аккаунт: {msg}")
+            await status_msg.edit_text(f"Не удалось добавить аккаунт: {quote_html(msg or '')}")
             return
 
         async with async_session_factory() as session:
@@ -181,7 +184,7 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                 existing.status = "active"
                 existing.is_active = True
                 await session.commit()
-                response_text = f"Аккаунт {info['phone']} обновлен в базе."
+                response_text = f"Аккаунт {quote_html(info['phone'])} обновлен в базе."
             else:
                 acc = Account(
                     phone=info["phone"],
@@ -194,8 +197,8 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                 )
                 session.add(acc)
                 await session.commit()
-                name_display = info.get('first_name') or info['phone']
-                username_display = f" (@{info['username']})" if info.get('username') else ""
+                name_display = quote_html(info.get('first_name') or info['phone'])
+                username_display = f" (@{quote_html(info['username'])})" if info.get('username') else ""
                 response_text = f"Аккаунт {name_display}{username_display} успешно добавлен в пул."
 
         await state.clear()
@@ -229,14 +232,14 @@ async def handle_account_password(message: Message, state: FSMContext):
             Path(archive_path).unlink(missing_ok=True)
             await state.clear()
             await status_msg.edit_text(
-                f"Ошибка авторизации: {msg}\nПревышено количество попыток. Загрузите архив заново.",
+                f"Ошибка авторизации: {quote_html(msg or '')}\nПревышено количество попыток. Загрузите архив заново.",
                 reply_markup=back_keyboard("nav_accounts")
             )
             return
 
         await state.update_data(attempts=attempts)
         await status_msg.edit_text(
-            f"Ошибка авторизации: {msg}\nПопытка {attempts} из 3. Введите пароль еще раз:",
+            f"Ошибка авторизации: {quote_html(msg or '')}\nПопытка {attempts} из 3. Введите пароль еще раз:",
             reply_markup=back_keyboard("nav_accounts")
         )
         return
@@ -251,7 +254,7 @@ async def handle_account_password(message: Message, state: FSMContext):
                 existing.session_encrypted = info["session_encrypted"]
                 existing.status = "active"
                 await session.commit()
-                response_text = f"Аккаунт {info['phone']} успешно обновлен с 2FA паролем."
+                response_text = f"Аккаунт {quote_html(info['phone'])} успешно обновлен с 2FA паролем."
             else:
                 acc = Account(
                     phone=info["phone"],
@@ -263,13 +266,14 @@ async def handle_account_password(message: Message, state: FSMContext):
                 )
                 session.add(acc)
                 await session.commit()
-                response_text = f"Аккаунт {info['phone']} успешно авторизован и сохранен."
+                response_text = f"Аккаунт {quote_html(info['phone'])} успешно авторизован и сохранен."
 
         await state.clear()
         await status_msg.edit_text(response_text, reply_markup=back_keyboard("nav_accounts"))
 
     finally:
         Path(archive_path).unlink(missing_ok=True)
+
 
 @accounts_router.callback_query(F.data.startswith("acc_list_"))
 async def callback_list_accounts(callback: CallbackQuery):
@@ -296,7 +300,7 @@ async def callback_list_accounts(callback: CallbackQuery):
     lines = [f"Список аккаунтов (всего: {total}, стр. {page_num}/{total_pages}):\n"]
     for acc in accounts:
         display_name = acc.username and f"@{acc.username}" or acc.first_name or acc.phone
-        lines.append(f"#{acc.id} {display_name} [{acc.status}] (инвайтов сегодня: {acc.daily_invites_count})")
+        lines.append(f"#{acc.id} {quote_html(display_name)} [{acc.status}] (инвайтов сегодня: {acc.daily_invites_count})")
 
     await safe_edit_text(
         callback.message,

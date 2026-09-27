@@ -43,6 +43,19 @@ class Settings(BaseSettings):
             raise ValueError("MIN_DELAY_BETWEEN_INVITES cannot exceed MAX_DELAY_BETWEEN_INVITES")
         if self.DEFAULT_SPEED_PROFILE not in {"cautious", "normal", "fast"}:
             raise ValueError(f"Invalid DEFAULT_SPEED_PROFILE: {self.DEFAULT_SPEED_PROFILE}")
+        missing = [k for k, v in {
+            "BOT_TOKEN": self.BOT_TOKEN,
+            "TELEGRAM_API_ID": self.TELEGRAM_API_ID,
+            "TELEGRAM_API_HASH": self.TELEGRAM_API_HASH,
+            "ENCRYPTION_KEY": self.ENCRYPTION_KEY,
+        }.items() if not v]
+        if missing:
+            raise ValueError(f"Required settings not configured: {', '.join(missing)}")
+        try:
+            from cryptography.fernet import Fernet
+            Fernet(self.ENCRYPTION_KEY.encode() if isinstance(self.ENCRYPTION_KEY, str) else self.ENCRYPTION_KEY)
+        except Exception as exc:
+            raise ValueError(f"ENCRYPTION_KEY is not a valid Fernet key: {exc}") from exc
         return self
 
 

@@ -1,13 +1,32 @@
 import asyncio
+import re
 import socket
 from datetime import datetime, timezone
 from typing import List, Tuple, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Proxy
 from app.core.security import encrypt_session_string
+
+ALLOWED_PROXY_PROTOCOLS = ("socks5", "socks4", "http")
+HOST_PATTERN = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+def _valid_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    try:
+        socket.inet_pton(socket.AF_INET, host)
+        return True
+    except OSError:
+        pass
+    try:
+        socket.inet_pton(socket.AF_INET6, host)
+        return True
+    except OSError:
+        pass
+    return bool(HOST_PATTERN.match(host))
 
 def parse_proxy_line(raw_line: str) -> Optional[Tuple[str, int, Optional[str], Optional[str], str]]:
     line = raw_line.strip()
@@ -16,25 +35,30 @@ def parse_proxy_line(raw_line: str) -> Optional[Tuple[str, int, Optional[str], O
 
     protocol = "socks5"
     if "://" in line:
-        parsed = urlparse(line)
-        protocol = parsed.scheme.lower() or "socks5"
-        host = parsed.hostname
-        port = parsed.port
-        username = parsed.username
-        password = parsed.password
-        if host and port:
-            return host, port, username, password, protocol
-        return None
+        try:
+            parsed = urlparse(line)
+            protocol = parsed.scheme.lower() or "socks5"
+            host = parsed.hostname
+            port = parsed.port
+            username = unquote(parsed.username) if parsed.username else None
+            password = unquote(parsed.password) if parsed.password else None
+        except ValueError:
+            return None
+        if protocol not in ALLOWED_PROXY_PROTOCOLS:
+            return None
+        if not _valid_host(host) or not port or not 1 <= port <= 65535:
+            return None
+        return host, port, username, password, protocol
 
     parts = line.split(":")
     try:
         if len(parts) == 2:
             port = int(parts[1])
-            if 1 <= port <= 65535:
+            if 1 <= port <= 65535 and _valid_host(parts[0]):
                 return parts[0], port, None, None, protocol
         elif len(parts) == 4:
             port = int(parts[1])
-            if 1 <= port <= 65535:
+            if 1 <= port <= 65535 and _valid_host(parts[0]):
                 return parts[0], port, parts[2], parts[3], protocol
     except ValueError:
         return None

@@ -4,6 +4,7 @@ from pathlib import Path
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, FSInputFile
+from html import escape as quote_html
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
@@ -127,10 +128,10 @@ async def execute_parsing(message: Message, state: FSMContext, chat_identifier: 
 
         if export_path and export_path.exists():
             document_file = FSInputFile(export_path, filename=export_path.name)
-            await message.answer_document(document_file, caption=f"Выгрузка из {chat_identifier}")
+            await message.answer_document(document_file, caption=f"Выгрузка из {quote_html(chat_identifier)}")
 
     except Exception as exc:
-        await status_msg.edit_text(f"Ошибка при сборе аудитории: {exc}", reply_markup=back_keyboard("nav_parser"))
+        await status_msg.edit_text(f"Ошибка при сборе аудитории: {quote_html(str(exc))}", reply_markup=back_keyboard("nav_parser"))
     finally:
         await state.clear()
 
