@@ -222,3 +222,127 @@ async def test_proxy_service_import_encrypts_password():
 
     await engine.dispose()
 
+
+@pytest.mark.asyncio
+async def test_flood_defers_member_out_of_pending_pick():
+    from sqlalchemy import select, and_
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from app.models.models import Base, TargetGroup, AudienceMember
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as session:
+        group = TargetGroup(title="target", username="target")
+        session.add(group)
+        await session.flush()
+        session.add(AudienceMember(tg_id=1, source_chat="src", status="pending", target_group_id=group.id))
+        session.add(AudienceMember(tg_id=2, source_chat="src", status="deferred",
+                                   reason="FloodWait 60s", target_group_id=group.id))
+        await session.commit()
+
+        pick = select(AudienceMember).where(
+            and_(
+                AudienceMember.status == "pending",
+                (AudienceMember.target_group_id == None) | (AudienceMember.target_group_id == group.id),
+            )
+        ).order_by(AudienceMember.id.asc()).limit(1)
+        member = (await session.execute(pick)).scalars().first()
+        assert member is not None
+        assert member.tg_id == 1
+
+        deferred = (await session.execute(
+            select(AudienceMember).where(AudienceMember.status == "deferred"))).scalars().all()
+        assert len(deferred) == 1
+        assert deferred[0].reason == "FloodWait 60s"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_invite_stop_finalizes_task_in_db(monkeypatch):
+    import asyncio
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from app.models.models import Base, TargetGroup, InviteTask
+    import app.bot.handlers.inviter as inviter_handler
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as session:
+        group = TargetGroup(title="target", username="target")
+        session.add(group)
+        await session.flush()
+        task = InviteTask(target_group_id=group.id, status="running")
+        session.add(task)
+        await session.commit()
+        task_id = task.id
+
+    monkeypatch.setattr(inviter_handler, "async_session_factory", session_factory)
+
+    stopped = False
+
+    class FakeOrchestrator:
+        def stop(self):
+            nonlocal stopped
+            stopped = True
+
+    done = asyncio.get_running_loop().create_future()
+    done.set_result(None)
+    monkeypatch.setattr(inviter_handler, "active_orchestrator", FakeOrchestrator())
+    monkeypatch.setattr(inviter_handler, "active_task_handle", done)
+    monkeypatch.setattr(inviter_handler, "active_task_id", task_id)
+
+    callback = MagicMock()
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+    callback.answer = AsyncMock()
+
+    await inviter_handler.callback_invite_stop(callback)
+
+    assert stopped
+    assert inviter_handler.active_orchestrator is None
+    assert inviter_handler.active_task_id is None
+
+    async with session_factory() as session:
+        stored = await session.get(InviteTask, task_id)
+        assert stored.status == "stopped"
+        assert stored.finished_at is not None
+
+    await engine.dispose()
+
+
+def test_tdata_password_required_sentinel(monkeypatch, tmp_path):
+    import asyncio
+    import zipfile
+    from pathlib import Path
+    import app.telegram.converter as converter
+
+    archive = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("tdata/", "")
+
+    def need_password(*args, **kwargs):
+        raise Exception("tdata archive needs password")
+
+    monkeypatch.setattr(converter, "TDesktop", need_password)
+    monkeypatch.setattr(converter, "safe_extract_zip",
+                        lambda zip_path, temp_dir: Path(temp_dir).mkdir(parents=True, exist_ok=True))
+
+    success, msg, info = asyncio.run(converter.convert_tdata_archive(archive))
+    assert success is False
+    assert msg == converter.PASSWORD_REQUIRED
+    assert info is None
+
+    def other_failure(*args, **kwargs):
+        raise Exception("disk gone")
+
+    monkeypatch.setattr(converter, "TDesktop", other_failure)
+    success, msg, info = asyncio.run(converter.convert_tdata_archive(archive))
+    assert success is False
+    assert msg != converter.PASSWORD_REQUIRED
+

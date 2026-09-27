@@ -14,8 +14,8 @@ from app.models.models import Account, Proxy
 from app.bot.states import AccountState
 from app.bot.keyboards import accounts_menu_keyboard, back_keyboard, accounts_pagination_keyboard
 from app.core.utils import safe_edit_text
-from app.telegram.converter import convert_tdata_archive, import_session_file
-from app.telegram.client_factory import get_telethon_client
+from app.telegram.converter import convert_tdata_archive, import_session_file, PASSWORD_REQUIRED
+from app.telegram.client_factory import get_telethon_client, decrypt_proxy_password
 from app.services.spambot_service import check_account_spambot
 from app.services.proxy_service import parse_proxy_line
 from app.services.export_service import generate_accounts_excel
@@ -107,7 +107,7 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                                     "addr": chosen_proxy.host,
                                     "port": chosen_proxy.port,
                                     "username": chosen_proxy.username,
-                                    "password": chosen_proxy.password,
+                                    "password": decrypt_proxy_password(chosen_proxy.password),
                                     "rdns": True
                                 }
 
@@ -150,10 +150,10 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                 shutil.rmtree(inspect_dir, ignore_errors=True)
 
             success, msg, info = await convert_tdata_archive(temp_target)
-            if not success and "2FA" in msg:
+            if not success and msg == PASSWORD_REQUIRED:
                 await state.set_state(AccountState.waiting_for_password)
                 await state.update_data(archive_path=str(temp_target))
-                await status_msg.edit_text("Для этой TData требуется пароль двухэтапной аутентификации. Введите его в ответном сообщении:")
+                await status_msg.edit_text("Для этой TData требуется пароль двухэтапной аутентификации. Введите его в ответном сообщении и удалите сообщение после отправки:")
                 return
 
         elif expected_type == "session" or filename.lower().endswith(".session"):
@@ -216,6 +216,10 @@ async def handle_account_password(message: Message, state: FSMContext):
         return
 
     password = message.text.strip()
+    try:
+        await message.delete()
+    except Exception:
+        pass
     status_msg = await message.answer("Проверка пароля и конвертация сессии...")
 
     success, msg, info = await convert_tdata_archive(Path(archive_path), password=password)

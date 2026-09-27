@@ -146,7 +146,7 @@ async def callback_parse_export(callback: CallbackQuery):
         await callback.answer()
         return
 
-    timestamp = int(datetime.now(timezone.utc).timestamp())
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     export_path = DATA_DIR / "exports" / f"pending_pool_{timestamp}.txt"
     export_path.parent.mkdir(parents=True, exist_ok=True)
 

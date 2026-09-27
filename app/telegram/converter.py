@@ -12,6 +12,9 @@ from opentele2.api import CreateNewSession
 from app.core.config import settings
 from app.core.security import safe_extract_zip, encrypt_session_string
 
+# returned as msg when the tdata archive needs a 2fa password
+PASSWORD_REQUIRED = "tdata_password_required"
+
 async def import_session_file(session_path: Path, proxy: Optional[Dict[str, Any]] = None) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     session_name = str(session_path.resolve())
     client = TelegramClient(
@@ -92,6 +95,8 @@ async def convert_tdata_archive(
         finally:
             await telethon_client.disconnect()
     except Exception as exc:
+        if "password" in str(exc).lower():
+            return False, PASSWORD_REQUIRED, None
         return False, f"Ошибка конвертации TData: {exc}", None
     finally:
         if temp_dir.exists():

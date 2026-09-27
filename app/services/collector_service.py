@@ -82,7 +82,7 @@ async def collect_chat_members(
                 if progress_callback:
                     await progress_callback(len(collected_users), f"Собрано {len(collected_users)} участников...")
 
-                if len(alphabet) > 1 and len(collected_users) > 10000:
+                if len(collected_users) > 10000:
                     break
 
         new_saved = 0
@@ -138,7 +138,7 @@ async def collect_chat_members(
 
         export_dir = DATA_DIR / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
-        export_filename = export_dir / f"export_{int(datetime.now().timestamp())}.txt"
+        export_filename = export_dir / f"export_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.txt"
 
         lines = []
         for tg_user in collected_users.values():

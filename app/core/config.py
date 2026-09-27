@@ -33,14 +33,9 @@ class Settings(BaseSettings):
     DEFAULT_SPEED_PROFILE: str = Field(default="normal", description="cautious | normal | fast")
     MIN_DELAY_BETWEEN_INVITES: int = Field(default=35, description="Min seconds between invites")
     MAX_DELAY_BETWEEN_INVITES: int = Field(default=75, description="Max seconds between invites")
-    ANTI_BURST_WORKER_DELAY: int = Field(default=40, description="Global delay between worker invites")
     MAX_INVITES_PER_SESSION_DAILY: int = Field(default=20, description="Daily limit per session")
 
     CIRCUIT_BREAKER_FLOOD_THRESHOLD: int = Field(default=3, description="Consecutive floods to trigger freeze")
-    CIRCUIT_BREAKER_FREEZE_MINUTES: int = Field(default=60, description="Minutes to freeze on flood")
-
-    PRE_INVITE_READ_POSTS: bool = Field(default=True, description="Emulate reading chat before inviting")
-    APP_LIKE_BEHAVIOR: bool = Field(default=True, description="Emulate opening app and dialogs")
 
     @model_validator(mode="after")
     def validate_settings(self) -> "Settings":

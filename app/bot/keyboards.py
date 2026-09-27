@@ -89,9 +89,9 @@ def inviter_menu_keyboard(task_running: bool = False, is_paused: bool = False) -
 def speed_profile_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="Осторожный (45-90с)", callback_data="set_speed_cautious"),
-        InlineKeyboardButton(text="Обычный (30-65с)", callback_data="set_speed_normal"),
-        InlineKeyboardButton(text="Быстрый (15-35с)", callback_data="set_speed_fast")
+        InlineKeyboardButton(text="Осторожный (50-110с)", callback_data="set_speed_cautious"),
+        InlineKeyboardButton(text="Обычный (35-75с)", callback_data="set_speed_normal"),
+        InlineKeyboardButton(text="Быстрый (17-37с)", callback_data="set_speed_fast")
     )
     builder.row(
         InlineKeyboardButton(text="Назад", callback_data="nav_inviter")

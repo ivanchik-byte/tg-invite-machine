@@ -202,7 +202,6 @@ class InviterOrchestrator:
 
                 account_id = active_account.id
                 member_id = target_member.id
-                target_user_ref = target_member.username or target_member.tg_id
                 target_access_hash = target_member.access_hash
                 assigned_proxy = active_account.proxy
 
@@ -290,7 +289,10 @@ class InviterOrchestrator:
                 else:
                     if db_member:
                         if error_status in ("flood_wait", "peer_flood"):
-                            pass
+                            # flood hit: park member out of pending so the next
+                            # LIMIT 1 pick doesn't retry the same user
+                            db_member.status = "deferred"
+                            db_member.reason = error_reason
                         else:
                             db_member.status = error_status or "failed"
                             db_member.reason = error_reason

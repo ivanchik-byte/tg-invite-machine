@@ -1,5 +1,6 @@
 import asyncio
 import time
+from datetime import datetime, timezone
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -50,9 +51,9 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
 async def callback_invite_speed(callback: CallbackQuery):
     text = (
         "Выберите профиль скорости инвайта:\n\n"
-        "Осторожный (45-90 сек): минимальный риск, для свежих аккаунтов.\n"
-        "Обычный (30-65 сек): рекомендуемый баланс скорости и надежности.\n"
-        "Быстрый (15-35 сек): повышенная скорость, для прогретых аккаунтов."
+        "Осторожный (50-110 сек): минимальный риск, для свежих аккаунтов.\n"
+        "Обычный (35-75 сек): рекомендуемый баланс скорости и надежности.\n"
+        "Быстрый (17-37 сек): повышенная скорость, для прогретых аккаунтов."
     )
     await safe_edit_text(callback.message, text, reply_markup=speed_profile_keyboard())
     await callback.answer()
@@ -210,13 +211,25 @@ async def callback_invite_resume(callback: CallbackQuery):
 
 @inviter_router.callback_query(F.data == "invite_stop")
 async def callback_invite_stop(callback: CallbackQuery):
-    global active_orchestrator, active_task_handle
+    global active_orchestrator, active_task_handle, active_task_id
     if active_orchestrator:
         active_orchestrator.stop()
         if active_task_handle and not active_task_handle.done():
             active_task_handle.cancel()
+        stopped_id = active_task_id
         active_orchestrator = None
         active_task_handle = None
+        active_task_id = None
+        if stopped_id is not None:
+            try:
+                async with async_session_factory() as session:
+                    stopped_task = await session.get(InviteTask, stopped_id)
+                    if stopped_task and stopped_task.status not in ("completed", "failed"):
+                        stopped_task.status = "stopped"
+                        stopped_task.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                        await session.commit()
+            except Exception:
+                pass
         await callback.answer("Инвайтинг остановлен.")
         await callback.message.edit_text("Инвайтинг остановлен пользователем.", reply_markup=inviter_menu_keyboard(task_running=False))
     else:
