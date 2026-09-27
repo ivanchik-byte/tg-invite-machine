@@ -645,4 +645,67 @@ async def test_all_nav_handlers_render_cleanly():
     cb.answer.assert_awaited()
 
 
+@pytest.mark.asyncio
+async def test_handle_account_file_oversized_rejected():
+    from app.bot.handlers.accounts import handle_account_file, MAX_UPLOAD_BYTES
+    from aiogram import Bot
+    from aiogram.types import Document
+    from aiogram.fsm.context import FSMContext
+
+    msg = MagicMock(spec=Message)
+    msg.answer = AsyncMock()
+    doc = MagicMock(spec=Document)
+    doc.file_name = "tdata.zip"
+    doc.file_size = MAX_UPLOAD_BYTES + 1024 * 1024  # > 20 MB
+    msg.document = doc
+
+    state = MagicMock(spec=FSMContext)
+    state.get_data = AsyncMock(return_value={"expected_type": "tdata"})
+    state.clear = AsyncMock()
+
+    bot = MagicMock(spec=Bot)
+    bot.download = AsyncMock()
+
+    await handle_account_file(msg, state, bot)
+
+    bot.download.assert_not_called()
+    state.clear.assert_awaited()
+    msg.answer.assert_awaited()
+    assert "Файл слишком большой" in msg.answer.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_handle_account_file_download_bad_request():
+    from app.bot.handlers.accounts import handle_account_file
+    from aiogram import Bot
+    from aiogram.exceptions import TelegramBadRequest
+    from aiogram.types import Document
+    from aiogram.fsm.context import FSMContext
+
+    msg = MagicMock(spec=Message)
+    status_msg = MagicMock(spec=Message)
+    status_msg.edit_text = AsyncMock()
+    msg.answer = AsyncMock(return_value=status_msg)
+
+    doc = MagicMock(spec=Document)
+    doc.file_name = "tdata.zip"
+    doc.file_id = "test_doc_123"
+    doc.file_size = 15 * 1024 * 1024
+    msg.document = doc
+
+    state = MagicMock(spec=FSMContext)
+    state.get_data = AsyncMock(return_value={"expected_type": "tdata"})
+    state.clear = AsyncMock()
+
+    bot = MagicMock(spec=Bot)
+    bot.download = AsyncMock(side_effect=TelegramBadRequest(method="getFile", message="Bad Request: file is too big"))
+
+    await handle_account_file(msg, state, bot)
+
+    state.clear.assert_awaited()
+    status_msg.edit_text.assert_awaited()
+    assert "файл превышает лимит Telegram Bot API" in status_msg.edit_text.call_args[0][0]
+
+
+
 

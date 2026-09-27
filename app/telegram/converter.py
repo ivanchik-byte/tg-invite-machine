@@ -79,16 +79,22 @@ async def convert_tdata_archive(
     try:
         await asyncio.to_thread(safe_extract_zip, zip_path, temp_dir)
 
-        tdata_dir = None
-        for current_root, directories, _ in os.walk(temp_dir):
-            for directory in directories:
-                if directory.lower() == "tdata":
-                    tdata_dir = Path(current_root) / directory
-                    break
-            if tdata_dir:
+        target_dir = None
+        for current_root, _, files in os.walk(temp_dir):
+            if "key_data" in files or "key_datas" in files:
+                target_dir = Path(current_root)
                 break
 
-        target_dir = tdata_dir or temp_dir
+        if not target_dir:
+            for current_root, directories, _ in os.walk(temp_dir):
+                for directory in directories:
+                    if directory.lower() == "tdata":
+                        target_dir = Path(current_root) / directory
+                        break
+                if target_dir:
+                    break
+
+        target_dir = target_dir or temp_dir
         tdesk = await asyncio.to_thread(TDesktop, str(target_dir))
 
         if not tdesk.isLoaded() or not tdesk.accounts:

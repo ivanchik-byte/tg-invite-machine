@@ -2,6 +2,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from aiogram import Router, F, Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, Document, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -23,7 +24,7 @@ from app.services.spambot_service import check_account_spambot
 from app.services.proxy_service import import_proxies_from_text
 from app.services.export_service import generate_accounts_excel
 
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB Telegram Bot API hard limit for getFile
 MAX_SESSION_FILES = 20
 
 accounts_router = Router()
@@ -65,7 +66,12 @@ async def callback_upload_tdata(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AccountState.waiting_for_file)
     await state.update_data(expected_type="tdata")
     text = (
-        "Отправьте ZIP архив с папкой tdata документом в этот чат.\n"
+        "<b>Загрузка аккаунта через TData (Telegram Desktop):</b>\n\n"
+        "Отправьте ZIP-архив с папкой <code>tdata</code> документом в этот чат.\n\n"
+        "<b>Требования к архиву:</b>\n"
+        "• Лимит Telegram Bot API на скачивание ботом: не более <b>20 МБ</b>.\n"
+        "• В архиве требуются только файл <code>key_data</code> и 16-значные папки сессии.\n"
+        "• Удалите из папки тяжелые кэши (<code>user_data</code>, <code>dumps</code>, <code>webview</code>), чтобы архив весил 1-3 МБ.\n\n"
         "Если на аккаунте установлен пароль двухэтапной аутентификации (2FA), бот запросит его следующим шагом."
     )
     await callback.message.edit_text(text, reply_markup=back_keyboard("nav_accounts"))
@@ -87,9 +93,15 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
     expected_type = state_data.get("expected_type")
 
     if document.file_size and document.file_size > MAX_UPLOAD_BYTES:
+        size_mb = round(document.file_size / (1024 * 1024), 1)
         await state.clear()
         await message.answer(
-            f"Файл слишком большой (максимум {MAX_UPLOAD_BYTES // (1024 * 1024)} МБ).",
+            f"<b>Файл слишком большой ({size_mb} МБ).</b>\n\n"
+            f"Telegram Bot API разрешает ботам скачивать файлы размером не более <b>20 МБ</b>.\n\n"
+            f"<b>Как уменьшить размер TData:</b>\n"
+            f"• В папке <code>tdata</code> удалите папки кэша: <code>user_data</code>, <code>dumps</code>, <code>webview</code>, <code>emoji</code>.\n"
+            f"• Для входа нужны только файл <code>key_data</code> и 16-значные шестнадцатеричные папки сессии.\n"
+            f"• Чистый архив TData весит всего 1-3 МБ.",
             reply_markup=back_keyboard("nav_accounts")
         )
         return
@@ -98,7 +110,30 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
     temp_target = TEMP_DIR / f"{document.file_id}_{filename}"
 
     try:
-        await bot.download(document, destination=temp_target)
+        try:
+            await bot.download(document, destination=temp_target)
+        except TelegramBadRequest as exc:
+            await state.clear()
+            if "file is too big" in str(exc).lower():
+                await status_msg.edit_text(
+                    "<b>Ошибка: файл превышает лимит Telegram Bot API (20 МБ).</b>\n\n"
+                    "Серверы Telegram отклонили скачивание файла из-за ограничения размера в 20 МБ.\n\n"
+                    "Очистите кэш (папки <code>user_data</code>, <code>dumps</code>, <code>webview</code>) перед упаковкой в ZIP. Чистый архив TData весит 1-3 МБ.",
+                    reply_markup=back_keyboard("nav_accounts")
+                )
+            else:
+                await status_msg.edit_text(
+                    f"Ошибка Telegram при скачивании файла: {quote_html(str(exc))}",
+                    reply_markup=back_keyboard("nav_accounts")
+                )
+            return
+        except Exception as exc:
+            await state.clear()
+            await status_msg.edit_text(
+                f"Не удалось скачать файл: {quote_html(str(exc))}",
+                reply_markup=back_keyboard("nav_accounts")
+            )
+            return
 
         if filename.lower().endswith(".zip"):
             try:
@@ -159,12 +194,18 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                 return
         else:
             await state.clear()
-            await status_msg.edit_text("Неподдерживаемый формат файла. Отправьте .zip архив с tdata или .session файл.")
+            await status_msg.edit_text(
+                "Неподдерживаемый формат файла. Отправьте .zip архив с tdata или .session файл.",
+                reply_markup=back_keyboard("nav_accounts")
+            )
             return
 
         if not success or not info:
             await state.clear()
-            await status_msg.edit_text(f"Не удалось добавить аккаунт: {quote_html(msg or '')}")
+            await status_msg.edit_text(
+                f"Не удалось добавить аккаунт: {quote_html(msg or '')}",
+                reply_markup=back_keyboard("nav_accounts")
+            )
             return
 
         async with async_session_factory() as session:
