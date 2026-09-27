@@ -3,9 +3,10 @@ import tempfile
 from pathlib import Path
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message, Document
+from aiogram.types import CallbackQuery, Message, Document, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from html import escape as quote_html
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings, TEMP_DIR
@@ -206,18 +207,19 @@ async def handle_account_password(message: Message, state: FSMContext):
 
     if not success or not info:
         attempts = state_data.get("attempts", 0) + 1
+        err_desc = "Неверный пароль 2FA" if msg == PASSWORD_REQUIRED else (msg or "Не удалось подтвердить пароль")
         if attempts >= 3:
             Path(archive_path).unlink(missing_ok=True)
             await state.clear()
             await status_msg.edit_text(
-                f"Ошибка авторизации: {quote_html(msg or '')}\nПревышено количество попыток. Загрузите файл заново.",
+                f"Ошибка авторизации: {quote_html(err_desc)}\nПревышено количество попыток. Загрузите файл заново.",
                 reply_markup=back_keyboard("nav_accounts")
             )
             return
 
         await state.update_data(attempts=attempts)
         await status_msg.edit_text(
-            f"Ошибка авторизации: {quote_html(msg or '')}\nПопытка {attempts} из 3. Введите пароль еще раз:",
+            f"Ошибка: {quote_html(err_desc)}.\nПопытка {attempts} из 3. Введите пароль еще раз:",
             reply_markup=back_keyboard("nav_accounts")
         )
         return
@@ -269,10 +271,60 @@ async def callback_list_accounts(callback: CallbackQuery):
         display_name = acc.username and f"@{acc.username}" or acc.first_name or acc.phone
         lines.append(f"#{acc.id} {quote_html(display_name)} [{acc.status}] (инвайтов сегодня: {acc.daily_invites_count})")
 
+    account_items = [
+        (acc.id, quote_html(acc.username and f"@{acc.username}" or acc.phone))
+        for acc in accounts
+    ]
     await safe_edit_text(
         callback.message,
         "\n".join(lines),
-        reply_markup=accounts_pagination_keyboard(offset=offset, limit=limit, total=total)
+        reply_markup=accounts_pagination_keyboard(offset=offset, limit=limit, total=total, account_items=account_items)
+    )
+    await callback.answer()
+
+@accounts_router.callback_query(F.data.startswith("acc_del_"))
+async def callback_delete_account(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    try:
+        acc_id = int(parts[2])
+        offset = int(parts[3]) if len(parts) > 3 else 0
+    except (ValueError, IndexError):
+        await callback.answer("Ошибка формата команды.")
+        return
+
+    async with async_session_factory() as session:
+        await session.execute(delete(Account).where(Account.id == acc_id))
+        await session.commit()
+
+    await callback.answer(f"Аккаунт #{acc_id} удален.")
+    callback.data = f"acc_list_{offset}"
+    await callback_list_accounts(callback)
+
+@accounts_router.callback_query(F.data == "acc_purge_all_confirm")
+async def callback_purge_all_confirm(callback: CallbackQuery):
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="Да, удалить все аккаунты", callback_data="acc_purge_all_exec"),
+        InlineKeyboardButton(text="Отмена", callback_data="nav_accounts")
+    )
+    await safe_edit_text(
+        callback.message,
+        "Вы действительно хотите удалить ВСЕ аккаунты из базы данных?",
+        reply_markup=builder.as_markup()
+    )
+    await callback.answer()
+
+@accounts_router.callback_query(F.data == "acc_purge_all_exec")
+async def callback_purge_all_exec(callback: CallbackQuery):
+    async with async_session_factory() as session:
+        result = await session.execute(delete(Account))
+        deleted_count = result.rowcount
+        await session.commit()
+
+    await safe_edit_text(
+        callback.message,
+        f"Удалено аккаунтов из базы: {deleted_count} шт.",
+        reply_markup=back_keyboard("nav_accounts")
     )
     await callback.answer()
 

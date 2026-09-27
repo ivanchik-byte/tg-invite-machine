@@ -5,6 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand
 
 from app.core.config import settings
 from app.core.database import init_db, engine
@@ -49,6 +50,16 @@ async def main():
     logger.info("Бот запущен и ожидает обновлений...")
     try:
         await bot.delete_webhook(drop_pending_updates=True)
+        try:
+            await bot.set_my_commands([
+                BotCommand(command="start", description="Главное меню управления"),
+                BotCommand(command="menu", description="Открыть панель разделов"),
+                BotCommand(command="stats", description="Сводная статистика системы"),
+                BotCommand(command="help", description="Инструкция и справка"),
+                BotCommand(command="cancel", description="Отменить текущий ввод")
+            ])
+        except Exception as exc:
+            logger.warning("Не удалось зарегистрировать команды бота: %s", exc)
         await dp.start_polling(bot)
     finally:
         await bot.session.close()

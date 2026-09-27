@@ -37,3 +37,19 @@ async def init_db() -> None:
     from app.models import models  # noqa: F401
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        if "sqlite" in settings.DATABASE_URL:
+            def run_sqlite_migrations(conn):
+                from sqlalchemy import text
+                account_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(accounts)")).fetchall()]
+                if account_cols:
+                    if "two_fa_password" not in account_cols:
+                        conn.execute(text("ALTER TABLE accounts ADD COLUMN two_fa_password TEXT;"))
+                    if "api_id" not in account_cols:
+                        conn.execute(text("ALTER TABLE accounts ADD COLUMN api_id INTEGER;"))
+                    if "api_hash" not in account_cols:
+                        conn.execute(text("ALTER TABLE accounts ADD COLUMN api_hash VARCHAR(64);"))
+                task_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(invite_tasks)")).fetchall()]
+                if task_cols:
+                    if "max_invites" not in task_cols:
+                        conn.execute(text("ALTER TABLE invite_tasks ADD COLUMN max_invites INTEGER;"))
+            await connection.run_sync(run_sqlite_migrations)

@@ -53,7 +53,9 @@ async def import_session_file(
             "last_name": getattr(user, "last_name", None),
             "username": getattr(user, "username", None),
             "session_encrypted": encrypted_token,
-            "two_fa_password": password
+            "two_fa_password": password,
+            "api_id": settings.TELEGRAM_API_ID,
+            "api_hash": settings.TELEGRAM_API_HASH
         }
         return True, "Успешно", user_info
     except SessionPasswordNeededError:
@@ -98,7 +100,8 @@ async def convert_tdata_archive(
             proxy=proxy
         )
         try:
-            await telethon_client.connect()
+            if not telethon_client.is_connected():
+                await telethon_client.connect()
 
             if not await telethon_client.is_user_authorized():
                 return False, "Не удалось авторизовать новую сессию из TData", None
@@ -107,19 +110,26 @@ async def convert_tdata_archive(
             session_string = StringSession.save(telethon_client.session)
             encrypted_token = encrypt_session_string(session_string)
 
+            api_id = getattr(telethon_client, "api_id", None) or 2040
+            api_hash = getattr(telethon_client, "api_hash", None) or "b18441a1ff607e10a989891a5462e627"
+
             account_info = {
-                "phone": getattr(user, "phone", None) or f"tdata_{user.id}",
+                "phone": getattr(user, "phone", None) or f"+{user.id}",
                 "first_name": getattr(user, "first_name", None),
                 "last_name": getattr(user, "last_name", None),
                 "username": getattr(user, "username", None),
                 "session_encrypted": encrypted_token,
-                "two_fa_password": password
+                "two_fa_password": password,
+                "api_id": api_id,
+                "api_hash": api_hash
             }
             return True, "Успешно", account_info
         finally:
             await telethon_client.disconnect()
     except Exception as exc:
-        if "password" in str(exc).lower():
+        exc_name = type(exc).__name__.lower()
+        exc_str = str(exc).lower()
+        if "nopasswordprovided" in exc_name or "sessionpasswordneeded" in exc_name or "password" in exc_str:
             return False, PASSWORD_REQUIRED, None
         return False, f"Ошибка конвертации TData: {exc}", None
     finally:

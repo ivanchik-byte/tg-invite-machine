@@ -145,26 +145,26 @@ sequenceDiagram
     TM->>ORCH: Запуск задачи (task_id, target, limit, profile)
     loop Цикл инвайтинга
         ORCH->>DB: Проверка достижения max_invites
-        alt Лимит достигнут
+        opt Лимит достигнут
             ORCH->>DB: Статус completed, фиксация finished_at
             ORCH->>TM: Уведомление о завершении
         end
         ORCH->>DB: Выбор доступного аккаунта (лимит < 20, не в отлежке)
         ORCH->>DB: Выбор пользователя из очереди (status = pending)
-        ORCH->>TG: Pre-invite: UpdateStatus + чтение 3-7 сообщений
+        ORCH->>TG: Pre-invite: UpdateStatus + чтение сообщений
         ORCH->>TG: InviteToChannelRequest(target, user)
         alt Успешно
             ORCH->>DB: member.status = invited, account.record_invite()
-        alt FloodWaitError (X сек)
-            ORCH->>DB: account.cooldown = now + X + 60, member.status = deferred
-        alt PeerFloodError (Спамблок)
-            ORCH->>DB: account.cooldown = now + 24ч, member.status = deferred
-        alt UserPrivacyRestrictedError
+        else FloodWaitError
+            ORCH->>DB: account.cooldown = now + wait_time, member.status = deferred
+        else PeerFloodError
+            ORCH->>DB: account.cooldown = now + 24h, member.status = deferred
+        else UserPrivacyRestrictedError
             ORCH->>DB: member.status = restricted
-        alt AccountBannedError
+        else AccountBannedError
             ORCH->>DB: account.status = banned, member.status = pending
         end
-        ORCH->>ORCH: Пауза по тримодальной модели (с прерыванием по stop_event)
+        ORCH->>ORCH: Пауза по тримодальной модели
     end
 ```
 

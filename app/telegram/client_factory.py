@@ -54,10 +54,13 @@ def get_telethon_client(account: Account, proxy: Optional[Proxy] = None) -> Tele
 
     decrypted_session = decrypt_session_string(account.session_encrypted)
 
+    client_api_id = getattr(account, "api_id", None) or settings.TELEGRAM_API_ID
+    client_api_hash = getattr(account, "api_hash", None) or settings.TELEGRAM_API_HASH
+
     client = TelegramClient(
         StringSession(decrypted_session),
-        api_id=settings.TELEGRAM_API_ID,
-        api_hash=settings.TELEGRAM_API_HASH,
+        api_id=client_api_id,
+        api_hash=client_api_hash,
         proxy=proxy_config,
         device_model="Desktop",
         system_version="Windows 11 Pro 64-bit",

@@ -249,3 +249,55 @@ async def test_custom_delay_handler_valid_and_invalid():
     await handle_custom_delay(msg_inv, state)
     msg_inv.answer.assert_awaited_once()
     assert "корректный диапазон" in msg_inv.answer.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_help_and_cancel_commands():
+    from app.bot.handlers.menu import handle_help, handle_cancel
+
+    # Test /help
+    msg = MagicMock(spec=Message)
+    msg.answer = AsyncMock()
+    await handle_help(msg)
+    msg.answer.assert_awaited_once()
+    assert "Справка по управлению" in msg.answer.call_args[0][0]
+    assert "/help" in msg.answer.call_args[0][0]
+
+    # Test /cancel
+    state = MagicMock(spec=FSMContext)
+    state.clear = AsyncMock()
+    msg_cancel = MagicMock(spec=Message)
+    msg_cancel.answer = AsyncMock()
+    await handle_cancel(msg_cancel, state)
+    state.clear.assert_awaited_once()
+    msg_cancel.answer.assert_awaited_once()
+    assert "Действие отменено" in msg_cancel.answer.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_account_api_id_and_telethon_client(test_session, monkeypatch):
+    from app.services.account_service import register_single_account
+    from app.telegram.client_factory import get_telethon_client
+    from app.core.security import encrypt_session_string
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "REQUIRE_STRICT_PROXIES", False)
+
+    dummy_session = encrypt_session_string("1ApWapzIBuwABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj9AQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2BhYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ent8fX5_gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp-goaKjpKWmp6ipqqusra6vsLGys7S1tre4ubq7vL2-v8DBwsPExcbHyMnKy8zNzs_Q0dLT1NXW19jZ2tvc3d7f4OHi4-Tl5ufo6err7O3u7_Dx8vP09fb3-Pn6-_z9_v8=")
+    info = {
+        "phone": "+79991234567",
+        "first_name": "TDataUser",
+        "session_encrypted": dummy_session,
+        "api_id": 2040,
+        "api_hash": "b18441a1ff607e10a989891a5462e627"
+    }
+
+    acc, is_new = await register_single_account(test_session, info)
+    assert is_new is True
+    assert acc.api_id == 2040
+    assert acc.api_hash == "b18441a1ff607e10a989891a5462e627"
+
+    client = get_telethon_client(acc, proxy=None)
+    assert client.api_id == 2040
+    assert client.api_hash == "b18441a1ff607e10a989891a5462e627"
+

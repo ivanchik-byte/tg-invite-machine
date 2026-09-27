@@ -41,6 +41,10 @@ async def register_single_account(
         existing.username = info.get("username")
         existing.status = "active"
         existing.is_active = True
+        if info.get("api_id"):
+            existing.api_id = info["api_id"]
+        if info.get("api_hash"):
+            existing.api_hash = info["api_hash"]
         if encrypted_2fa:
             existing.two_fa_password = encrypted_2fa
         if proxy_id:
@@ -52,6 +56,8 @@ async def register_single_account(
         phone=phone,
         session_encrypted=info["session_encrypted"],
         two_fa_password=encrypted_2fa,
+        api_id=info.get("api_id"),
+        api_hash=info.get("api_hash"),
         first_name=info.get("first_name"),
         last_name=info.get("last_name"),
         username=info.get("username"),

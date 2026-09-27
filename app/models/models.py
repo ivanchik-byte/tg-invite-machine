@@ -53,6 +53,8 @@ class Account(Base):
     proxy: Mapped[Optional[Proxy]] = relationship("Proxy", back_populates="accounts")
 
     two_fa_password: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    api_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    api_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     daily_invites_count: Mapped[int] = mapped_column(Integer, default=0)
     last_invite_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     cooldown_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)

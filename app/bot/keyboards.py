@@ -33,7 +33,8 @@ def accounts_menu_keyboard(has_accounts: bool = True) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Очистить забаненные", callback_data="acc_purge_banned")
         )
         builder.row(
-            InlineKeyboardButton(text="Список аккаунтов", callback_data="acc_list_0")
+            InlineKeyboardButton(text="Список аккаунтов", callback_data="acc_list_0"),
+            InlineKeyboardButton(text="Удалить все", callback_data="acc_purge_all_confirm")
         )
     builder.row(
         InlineKeyboardButton(text="Назад в меню", callback_data="nav_main")
@@ -161,8 +162,13 @@ def migrate_confirm_keyboard() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="Отмена", callback_data="migrate_cancel"))
     return builder.as_markup()
 
-def accounts_pagination_keyboard(offset: int, limit: int, total: int) -> InlineKeyboardMarkup:
+def accounts_pagination_keyboard(offset: int, limit: int, total: int, account_items: list | None = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    if account_items:
+        for acc_id, name in account_items:
+            builder.row(
+                InlineKeyboardButton(text=f"Удалить #{acc_id} {name}", callback_data=f"acc_del_{acc_id}_{offset}")
+            )
     nav_buttons = []
     if offset > 0:
         prev_offset = max(0, offset - limit)
