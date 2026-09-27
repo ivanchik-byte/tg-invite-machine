@@ -96,7 +96,7 @@ async def callback_set_speed(callback: CallbackQuery, state: FSMContext):
         await state.set_state(InviterState.waiting_for_custom_delay)
         await state.update_data(source="main_menu")
         await callback.message.edit_text(
-            "Введите диапазон задержки между инвайтами в секундах (например: 40-80):",
+            "Введите диапазон задержки между инвайтами в секундах (от 0 до 600, например: 0-1 или 40-80):",
             reply_markup=back_keyboard("nav_inviter")
         )
         await callback.answer()
@@ -400,7 +400,7 @@ async def callback_cfg_speed(callback: CallbackQuery, state: FSMContext):
         await state.set_state(InviterState.waiting_for_custom_delay)
         await state.update_data(source="task_config")
         await callback.message.edit_text(
-            "Введите диапазон задержки между инвайтами в секундах (например: 40-80):",
+            "Введите диапазон задержки между инвайтами в секундах (от 0 до 600, например: 0-1 или 40-80):",
             reply_markup=back_keyboard("cfg_return")
         )
         await callback.answer()
@@ -490,14 +490,15 @@ async def handle_custom_delay(message: Message, state: FSMContext):
             max_pause = float(parts[1])
             if min_pause > max_pause:
                 min_pause, max_pause = max_pause, min_pause
-            if 5.0 <= min_pause and max_pause <= 600.0:
+            if 0.0 <= min_pause and max_pause <= 600.0:
                 valid = True
         except ValueError:
             valid = False
 
     if not valid:
         await message.answer(
-            "Пожалуйста, введите корректный диапазон от 5 до 600 секунд (например: 40-80):",
+            "<b>[ОШИБКА] Некорректный диапазон</b>\n\n"
+            "Пожалуйста, введите диапазон задержки от 0 до 600 секунд (например: 0-1 или 40-80):",
             reply_markup=back_keyboard("cfg_return")
         )
         return
@@ -506,11 +507,20 @@ async def handle_custom_delay(message: Message, state: FSMContext):
     data = await state.get_data()
     source = data.get("source", "task_config")
 
+    warning_text = ""
+    if max_pause <= 1.0:
+        warning_text = (
+            "\n\n<b>[ВНИМАНИЕ] Режим турбо (0-1 сек):</b>\n"
+            "Высокий риск блокировки сессий и целевого чата со стороны алгоритмов Telegram."
+        )
+
     if source == "main_menu":
         settings.DEFAULT_SPEED_PROFILE = custom_profile
         await state.clear()
         await message.answer(
-            f"Установлен профиль по умолчанию: {int(min_pause)}-{int(max_pause)} сек.",
+            f"<b>[УСПЕХ] Профиль скорости сохранен</b>\n\n"
+            f"• Установлен интервал: <code>{int(min_pause)}-{int(max_pause)} сек</code>"
+            f"{warning_text}",
             reply_markup=back_keyboard("nav_inviter")
         )
         return

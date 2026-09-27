@@ -242,13 +242,13 @@ async def test_custom_delay_handler_valid_and_invalid():
         _, kwargs = mock_show.call_args
         assert kwargs["speed_profile"] == "custom:45:90"
 
-    # Invalid range out of bounds
+    # Invalid range out of bounds (> 600)
     msg_inv = MagicMock(spec=Message)
-    msg_inv.text = "1-2"
+    msg_inv.text = "700-800"
     msg_inv.answer = AsyncMock()
     await handle_custom_delay(msg_inv, state)
     msg_inv.answer.assert_awaited_once()
-    assert "корректный диапазон" in msg_inv.answer.call_args[0][0]
+    assert "Некорректный диапазон" in msg_inv.answer.call_args[0][0]
 
 
 @pytest.mark.asyncio

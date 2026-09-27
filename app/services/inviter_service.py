@@ -45,6 +45,10 @@ def calculate_delay(speed_profile: str) -> float:
                 min_pause, max_pause = max_pause, min_pause
         except (ValueError, IndexError):
             min_pause, max_pause = base_min, base_max
+        if max_pause <= 0.0:
+            return 0.0
+        if max_pause <= 1.0:
+            return random.uniform(min_pause, max_pause)
     else:
         profile_bounds = {
             "cautious": (base_min * 1.5, base_max * 1.5),
@@ -54,10 +58,10 @@ def calculate_delay(speed_profile: str) -> float:
         min_pause, max_pause = profile_bounds.get(speed_profile, (base_min, base_max))
     roll = random.random()
     if roll < 0.25:
-        return random.uniform(min_pause * 0.7, min_pause)
+        return max(0.0, random.uniform(min_pause * 0.7, min_pause))
     if roll < 0.85:
-        return random.uniform(min_pause, max_pause)
-    return random.uniform(max_pause, max_pause * 1.5)
+        return max(0.0, random.uniform(min_pause, max_pause))
+    return max(0.0, random.uniform(max_pause, max_pause * 1.5))
 
 async def simulate_pre_invite_reading(client: TelegramClient, target_entity: Any, mark_read: bool = True) -> None:
     try:
@@ -297,7 +301,11 @@ class InviterOrchestrator:
 
             try:
                 await client.connect()
-                await simulate_pre_invite_reading(client, target_input, mark_read=mark_read)
+                is_turbo = speed_profile.startswith("custom:") and any(
+                    speed_profile.startswith(f"custom:{p}:") for p in ("0", "1")
+                )
+                if not is_turbo:
+                    await simulate_pre_invite_reading(client, target_input, mark_read=mark_read)
 
                 if target_member.username:
                     user_to_add = await client.get_entity(target_member.username)
