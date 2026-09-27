@@ -88,6 +88,12 @@ class TargetGroup(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
+    @property
+    def target_link(self) -> str:
+        if self.username:
+            return f"@{self.username}"
+        return self.title or f"Chat #{self.id}"
+
 class AudienceMember(Base):
     __tablename__ = "audience_members"
     __table_args__ = (
@@ -113,6 +119,7 @@ class InviteTask(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     target_group_id: Mapped[int] = mapped_column(ForeignKey("target_groups.id", ondelete="CASCADE"), nullable=False)
+    target_group: Mapped[Optional[TargetGroup]] = relationship("TargetGroup")
     speed_profile: Mapped[str] = mapped_column(String(32), default="normal")
     status: Mapped[str] = mapped_column(String(32), default="pending")
     max_invites: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -122,3 +129,11 @@ class InviteTask(Base):
     flood_errors: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    @property
+    def success_count(self) -> int:
+        return self.successful_invites
+
+    @property
+    def flood_waits_count(self) -> int:
+        return self.flood_errors

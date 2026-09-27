@@ -23,7 +23,7 @@ async def callback_nav_proxies(callback: CallbackQuery, state: FSMContext):
             select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
         )).scalar_one()
 
-    policy_label = "Строгая изоляция (Zero-Leak)" if settings.FAIL_FAST_ON_PROXY_ERROR else "Тестовый режим (разрешено прямое IP)"
+    policy_label = "Строгая изоляция (Zero-Leak)" if settings.REQUIRE_STRICT_PROXIES else "Тестовый режим (разрешено прямое IP)"
 
     text = (
         "<b>TG-INVITE-MACHINE | Сетевой контур (Прокси)</b>\n"

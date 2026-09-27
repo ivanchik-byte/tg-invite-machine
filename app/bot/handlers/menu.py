@@ -92,7 +92,7 @@ async def build_main_dashboard_text() -> str:
         )
 
     speed_label = settings.DEFAULT_SPEED_PROFILE.replace("custom:", "свой: ") if settings.DEFAULT_SPEED_PROFILE.startswith("custom:") else settings.DEFAULT_SPEED_PROFILE
-    proxy_mode = "Строгий Zero-Leak" if settings.FAIL_FAST_ON_PROXY_ERROR else "Прямой (без прокси)"
+    proxy_mode = "Строгий Zero-Leak" if settings.REQUIRE_STRICT_PROXIES else "Прямой (без прокси)"
 
     pools_block = (
         "<b>Ресурсный пул:</b>\n"

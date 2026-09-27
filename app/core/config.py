@@ -25,6 +25,11 @@ class Settings(BaseSettings):
 
     ENCRYPTION_KEY: str = Field(default="", description="Fernet encryption key for sessions")
     REQUIRE_STRICT_PROXIES: bool = Field(default=False, description="Strict fail-fast proxy check to prevent IP leaks")
+
+    @property
+    def FAIL_FAST_ON_PROXY_ERROR(self) -> bool:
+        return self.REQUIRE_STRICT_PROXIES
+
     DATABASE_URL: str = Field(
         default=f"sqlite+aiosqlite:///{DATA_DIR / 'inviter.db'}",
         description="Async database connection string"

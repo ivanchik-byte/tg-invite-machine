@@ -568,5 +568,74 @@ async def test_register_single_account():
 
     await engine.dispose()
 
+@pytest.mark.asyncio
+async def test_all_nav_handlers_render_cleanly():
+    from app.bot.handlers.menu import (
+        handle_start,
+        callback_nav_main,
+        callback_nav_main_refresh,
+        callback_nav_stats,
+        handle_help,
+        handle_cancel
+    )
+    from app.bot.handlers.proxies import callback_nav_proxies
+    from app.bot.handlers.accounts import callback_nav_accounts
+    from app.bot.handlers.parser import callback_nav_parser
+    from app.bot.handlers.inviter import callback_nav_inviter
+    from aiogram.fsm.context import FSMContext
+
+    # Test Message handlers
+    msg = MagicMock(spec=Message)
+    msg.answer = AsyncMock()
+    await handle_start(msg)
+    msg.answer.assert_awaited()
+
+    msg_help = MagicMock(spec=Message)
+    msg_help.answer = AsyncMock()
+    await handle_help(msg_help)
+    msg_help.answer.assert_awaited()
+
+    state = MagicMock(spec=FSMContext)
+    state.clear = AsyncMock()
+    msg_cancel = MagicMock(spec=Message)
+    msg_cancel.answer = AsyncMock()
+    await handle_cancel(msg_cancel, state)
+    msg_cancel.answer.assert_awaited()
+
+    # Test CallbackQuery handlers
+    cb = MagicMock(spec=CallbackQuery)
+    cb.message = MagicMock(spec=Message)
+    cb.message.edit_text = AsyncMock()
+    cb.answer = AsyncMock()
+
+    await callback_nav_main(cb)
+    cb.message.edit_text.assert_awaited()
+    cb.answer.assert_awaited()
+
+    cb.message.edit_text.reset_mock()
+    cb.answer.reset_mock()
+    await callback_nav_main_refresh(cb)
+    cb.message.edit_text.assert_awaited()
+
+    cb.message.edit_text.reset_mock()
+    await callback_nav_proxies(cb, state)
+    cb.message.edit_text.assert_awaited()
+
+    cb.message.edit_text.reset_mock()
+    await callback_nav_accounts(cb, state)
+    cb.message.edit_text.assert_awaited()
+
+    cb.message.edit_text.reset_mock()
+    await callback_nav_parser(cb, state)
+    cb.message.edit_text.assert_awaited()
+
+    cb.message.edit_text.reset_mock()
+    await callback_nav_inviter(cb, state)
+    cb.message.edit_text.assert_awaited()
+
+    cb.message.edit_text.reset_mock()
+    await callback_nav_stats(cb)
+    cb.message.edit_text.assert_awaited()
+
 
 
