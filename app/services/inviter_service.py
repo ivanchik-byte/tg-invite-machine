@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import random
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable, Awaitable, List
@@ -15,7 +16,7 @@ from telethon.errors import (
 )
 from telethon.tl.functions.account import UpdateStatusRequest
 from telethon.tl.functions.channels import InviteToChannelRequest
-from telethon.tl.types import InputUser, InputPeerUser
+from telethon.tl.types import InputUser, InputPeerUser, InputPeerChannel, Channel
 from sqlalchemy import select, and_, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.models import Account, AudienceMember, TargetGroup, InviteTask
 from app.telegram.client_factory import get_telethon_client
+
+logger = logging.getLogger("tg_invite_machine")
 
 TaskUpdateCallback = Callable[[int, int, int, int, str], Awaitable[None]]
 
@@ -42,7 +45,7 @@ def calculate_delay(speed_profile: str) -> float:
         return random.uniform(min_pause, max_pause)
     return random.uniform(max_pause, max_pause * 1.5)
 
-async def simulate_pre_invite_reading(client: TelegramClient, target_entity: any) -> None:
+async def simulate_pre_invite_reading(client: TelegramClient, target_entity: any, mark_read: bool = True) -> None:
     try:
         await client(UpdateStatusRequest(offline=False))
         message_ids = []
@@ -51,10 +54,11 @@ async def simulate_pre_invite_reading(client: TelegramClient, target_entity: any
                 message_ids.append(message.id)
             await asyncio.sleep(random.uniform(1.2, 3.5))
 
-        if message_ids:
+        if mark_read and message_ids:
             await client.send_read_acknowledge(target_entity, max_id=max(message_ids))
-    except Exception:
-        pass
+    except Exception as exc:
+        # read markers are cosmetic: never fail the invite over them
+        logger.debug("pre-invite reading skipped: %s", exc)
 
 class InviterOrchestrator:
     def __init__(self, task_id: int):
@@ -104,7 +108,41 @@ class InviterOrchestrator:
             task.status = "running"
             await session.commit()
             speed_profile = task.speed_profile
-            target_identifier = target_group.username or target_group.tg_id
+
+            target_input = None
+            mark_read = True
+            if target_group.tg_id and target_group.access_hash:
+                target_input = InputPeerChannel(target_group.tg_id, target_group.access_hash)
+                mark_read = target_group.chat_type != "channel"
+            else:
+                # legacy target without stored ids: resolve once and backfill
+                probe = (await session.execute(
+                    select(Account).options(selectinload(Account.proxy)).where(
+                        Account.is_active == True, Account.status == "active"
+                    ).limit(1)
+                )).scalars().first()
+                if probe:
+                    probe_client = get_telethon_client(probe, proxy=probe.proxy)
+                    try:
+                        await probe_client.connect()
+                        resolved = await probe_client.get_entity(
+                            target_group.username or target_group.tg_id)
+                        if isinstance(resolved, Channel):
+                            target_group.chat_type = "channel" if resolved.broadcast else "supergroup"
+                        mark_read = not (isinstance(resolved, Channel) and resolved.broadcast)
+                        target_group.tg_id = resolved.id
+                        target_group.access_hash = resolved.access_hash
+                        await session.commit()
+                        target_input = InputPeerChannel(resolved.id, resolved.access_hash)
+                    except Exception as exc:
+                        logger.warning("cannot resolve invite target: %s", exc)
+                    finally:
+                        await probe_client.disconnect()
+
+            if target_input is None:
+                task.status = "failed"
+                await session.commit()
+                return
 
         circuit_breaker_floods = 0
         circuit_breaker_window_start = datetime.now(timezone.utc)
@@ -212,8 +250,7 @@ class InviterOrchestrator:
 
             try:
                 await client.connect()
-                target_chat_entity = await client.get_entity(target_identifier)
-                await simulate_pre_invite_reading(client, target_chat_entity)
+                await simulate_pre_invite_reading(client, target_input, mark_read=mark_read)
 
                 if target_access_hash and target_member.tg_id:
                     user_to_add = InputPeerUser(target_member.tg_id, target_access_hash)
@@ -224,7 +261,7 @@ class InviterOrchestrator:
                 else:
                     raise ValueError("Пользователь не найден")
 
-                await client(InviteToChannelRequest(target_chat_entity, [user_to_add]))
+                await client(InviteToChannelRequest(target_input, [user_to_add]))
                 invite_success = True
 
             except UserPrivacyRestrictedError:

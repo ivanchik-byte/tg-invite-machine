@@ -346,3 +346,51 @@ def test_tdata_password_required_sentinel(monkeypatch, tmp_path):
     assert success is False
     assert msg != converter.PASSWORD_REQUIRED
 
+
+def test_target_type_labels_cover_all_chat_types():
+    from app.bot.handlers.inviter import TARGET_TYPE_LABELS
+    assert TARGET_TYPE_LABELS["channel"] == "канал"
+    assert TARGET_TYPE_LABELS["supergroup"] == "супергруппа"
+    assert TARGET_TYPE_LABELS["basic_group"] == "группа"
+
+
+def test_migrate_confirm_keyboard():
+    from app.bot.keyboards import migrate_confirm_keyboard
+    kb = migrate_confirm_keyboard()
+    callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+    assert "migrate_confirm" in callbacks
+    assert "migrate_cancel" in callbacks
+
+
+@pytest.mark.asyncio
+async def test_pre_invite_reading_skips_mark_for_channels(monkeypatch):
+    from types import SimpleNamespace
+    from app.services import inviter_service
+
+    monkeypatch.setattr(inviter_service.random, "randint", lambda a, b: 2)
+    monkeypatch.setattr(inviter_service.random, "uniform", lambda a, b: 0)
+
+    class FakeClient:
+        def __init__(self):
+            self.acked = False
+
+        async def __call__(self, request):
+            return None
+
+        def iter_messages(self, entity, limit=None):
+            async def gen():
+                for mid in (5, 6):
+                    yield SimpleNamespace(id=mid)
+            return gen()
+
+        async def send_read_acknowledge(self, *args, **kwargs):
+            self.acked = True
+
+    channel_client = FakeClient()
+    await inviter_service.simulate_pre_invite_reading(channel_client, object(), mark_read=False)
+    assert channel_client.acked is False
+
+    group_client = FakeClient()
+    await inviter_service.simulate_pre_invite_reading(group_client, object(), mark_read=True)
+    assert group_client.acked is True
+

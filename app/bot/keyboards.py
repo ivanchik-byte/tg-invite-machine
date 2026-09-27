@@ -105,6 +105,12 @@ def back_keyboard(callback_target: str = "nav_main") -> InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
+def migrate_confirm_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="Да, мигрировать", callback_data="migrate_confirm"))
+    builder.row(InlineKeyboardButton(text="Отмена", callback_data="migrate_cancel"))
+    return builder.as_markup()
+
 def accounts_pagination_keyboard(offset: int, limit: int, total: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     nav_buttons = []

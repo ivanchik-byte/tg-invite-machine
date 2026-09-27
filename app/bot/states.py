@@ -13,4 +13,4 @@ class ParserState(StatesGroup):
 
 class InviterState(StatesGroup):
     waiting_for_target_group = State()
-    choosing_speed = State()
+    waiting_for_migrate_confirm = State()

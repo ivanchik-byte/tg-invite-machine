@@ -80,6 +80,8 @@ class TargetGroup(Base):
     username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, unique=True, nullable=True)
     access_hash: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # null for targets created before type detection
+    chat_type: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
