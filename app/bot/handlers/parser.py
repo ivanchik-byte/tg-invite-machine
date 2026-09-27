@@ -5,7 +5,7 @@ from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, FSInputFile
 from html import escape as quote_html
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.orm import selectinload
 
 from app.core.config import DATA_DIR
@@ -149,8 +149,11 @@ async def execute_parsing(message: Message, state: FSMContext, chat_identifier: 
             document_file = FSInputFile(export_path, filename=export_path.name)
             await message.answer_document(
                 document_file,
-                caption=f"<b>[ВЫГРУЗКА] Результаты сбора аудитории</b>\nИсточник: <code>{quote_html(chat_identifier)}</code>\nВсего записей: <code>{new_added}</code>"
+                caption=f"<b>[ВЫГРУЗКА] Результаты сбора аудитории</b>\n• Источник: <code>{quote_html(chat_identifier)}</code>\n• Добавлено в базу: <code>{new_added}</code> чел.",
+                reply_markup=back_keyboard("nav_parser")
             )
+        else:
+            await status_msg.edit_text(result_text, reply_markup=back_keyboard("nav_parser"))
 
     except Exception as exc:
         await status_msg.edit_text(
@@ -198,3 +201,15 @@ async def callback_parse_export(callback: CallbackQuery):
         )
     )
     await callback.answer()
+
+@parser_router.callback_query(F.data == "parse_clear")
+async def callback_parse_clear(callback: CallbackQuery, state: FSMContext):
+    async with async_session_factory() as session:
+        deleted = (await session.execute(delete(AudienceMember))).rowcount
+        await session.commit()
+
+    if deleted == 0:
+        await callback.answer("База аудитории уже пуста.", show_alert=True)
+    else:
+        await callback.answer(f"База очищена. Удалено {deleted} пользователей.", show_alert=True)
+    await callback_nav_parser(callback, state)

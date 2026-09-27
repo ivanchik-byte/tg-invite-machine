@@ -60,7 +60,8 @@ def parser_menu_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="Собрать активных по дням", callback_data="parse_active")
     )
     builder.row(
-        InlineKeyboardButton(text="Выгрузить базу в файл", callback_data="parse_export")
+        InlineKeyboardButton(text="Выгрузить базу в файл", callback_data="parse_export"),
+        InlineKeyboardButton(text="Очистить базу", callback_data="parse_clear")
     )
     builder.row(
         InlineKeyboardButton(text="Назад в меню", callback_data="nav_main")

@@ -21,7 +21,7 @@ from telethon.errors import (
 from telethon.tl.functions.account import UpdateStatusRequest
 from telethon.tl.functions.channels import InviteToChannelRequest
 from telethon.tl.types import InputUser, InputPeerUser, InputPeerChannel, Channel
-from sqlalchemy import select, and_, update
+from sqlalchemy import select, and_, update, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -263,7 +263,7 @@ class InviterOrchestrator:
 
                 target_query = select(AudienceMember).where(
                     AudienceMember.status == "pending"
-                ).order_by(AudienceMember.id.asc()).limit(1)
+                ).order_by(func.random()).limit(1)
 
                 if not is_sqlite:
                     target_query = target_query.with_for_update(skip_locked=True)
