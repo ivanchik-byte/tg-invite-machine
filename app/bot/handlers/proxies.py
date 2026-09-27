@@ -68,10 +68,11 @@ async def handle_proxy_input(message: Message, state: FSMContext):
         async with async_session_factory() as session:
             added, skipped = await import_proxies_from_text(session, raw_text)
 
+        status_tag = "[УСПЕХ]" if added > 0 else "[ВНИМАНИЕ]"
         text = (
-            f"Результат импорта прокси:\n"
-            f"Добавлено новых: {added}\n"
-            f"Пропущено дублей или некорректных: {skipped}"
+            f"<b>{status_tag} Результат импорта прокси</b>\n\n"
+            f"• Успешно добавлено новых: <code>{added}</code>\n"
+            f"• Пропущено дубликатов или некорректных: <code>{skipped}</code>"
         )
         await status_msg.edit_text(text, reply_markup=back_keyboard("nav_proxies"))
     finally:
@@ -85,7 +86,11 @@ async def callback_proxy_check(callback: CallbackQuery):
         proxies = (await session.execute(select(Proxy))).scalars().all()
 
     if not proxies:
-        await safe_edit_text(status_msg, "Список прокси пуст.", reply_markup=back_keyboard("nav_proxies"))
+        await safe_edit_text(
+            status_msg,
+            "<b>[ВНИМАНИЕ] Список прокси пуст</b>\n\nДобавьте прокси через меню.",
+            reply_markup=back_keyboard("nav_proxies")
+        )
         await callback.answer()
         return
 
@@ -109,10 +114,11 @@ async def callback_proxy_check(callback: CallbackQuery):
         if idx % 5 == 0 or idx == len(proxies):
             await safe_edit_text(status_msg, f"Проверено {idx}/{len(proxies)} прокси...\nДоступно: {working}, Недоступно: {failed}")
 
+    status_tag = "[УСПЕХ]" if failed == 0 and working > 0 else ("[ОШИБКА]" if working == 0 else "[ИТОГ]")
     text = (
-        f"Проверка прокси завершена.\n"
-        f"Доступных: {working}\n"
-        f"Недоступных: {failed}"
+        f"<b>{status_tag} Проверка прокси завершена</b>\n\n"
+        f"• Доступных (активны): <code>{working}</code>\n"
+        f"• Недоступных (ошибки): <code>{failed}</code>"
     )
     await safe_edit_text(status_msg, text, reply_markup=back_keyboard("nav_proxies"))
     await callback.answer()

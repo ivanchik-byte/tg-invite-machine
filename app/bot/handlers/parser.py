@@ -138,19 +138,25 @@ async def execute_parsing(message: Message, state: FSMContext, chat_identifier: 
             )
 
         result_text = (
-            f"Сбор успешно завершен.\n"
-            f"Добавлено новых профилей в очередь: {new_added}\n"
-            f"Пропущено дублей/уже собранных: {skipped}\n\n"
-            "Файл с выгрузкой прикреплен ниже."
+            f"<b>[УСПЕХ] Сбор аудитории успешно завершен</b>\n\n"
+            f"• Добавлено новых профилей: <code>{new_added}</code>\n"
+            f"• Пропущено (дубликаты/уже в базе): <code>{skipped}</code>\n\n"
+            "Файл с результатами выгрузки прикреплен ниже."
         )
         await status_msg.edit_text(result_text)
 
         if export_path and export_path.exists():
             document_file = FSInputFile(export_path, filename=export_path.name)
-            await message.answer_document(document_file, caption=f"Выгрузка из {quote_html(chat_identifier)}")
+            await message.answer_document(
+                document_file,
+                caption=f"<b>[ВЫГРУЗКА] Результаты сбора аудитории</b>\nИсточник: <code>{quote_html(chat_identifier)}</code>\nВсего записей: <code>{new_added}</code>"
+            )
 
     except Exception as exc:
-        await status_msg.edit_text(f"Ошибка при сборе аудитории: {quote_html(str(exc))}", reply_markup=back_keyboard("nav_parser"))
+        await status_msg.edit_text(
+            f"<b>[ОШИБКА] Сбой при сборе аудитории</b>\n\nПричина: <code>{quote_html(str(exc))}</code>",
+            reply_markup=back_keyboard("nav_parser")
+        )
     finally:
         await state.clear()
 
@@ -162,7 +168,11 @@ async def callback_parse_export(callback: CallbackQuery):
         )).scalars().all()
 
     if not members:
-        await safe_edit_text(callback.message, "В базе еще нет собранных пользователей. Сначала запустите сбор аудитории из чата.", reply_markup=back_keyboard("nav_parser"))
+        await safe_edit_text(
+            callback.message,
+            "<b>[ВНИМАНИЕ] База аудитории пуста</b>\n\nВ базе еще нет собранных пользователей. Сначала запустите сбор аудитории из чата.",
+            reply_markup=back_keyboard("nav_parser")
+        )
         await callback.answer()
         return
 

@@ -704,7 +704,7 @@ async def test_handle_account_file_download_bad_request():
 
     state.clear.assert_awaited()
     status_msg.edit_text.assert_awaited()
-    assert "файл превышает лимит Telegram Bot API" in status_msg.edit_text.call_args[0][0]
+    assert "файл превышает лимит telegram bot api" in status_msg.edit_text.call_args[0][0].lower()
 
 
 

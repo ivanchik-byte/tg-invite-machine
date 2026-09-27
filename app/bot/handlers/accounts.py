@@ -116,21 +116,21 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
             await state.clear()
             if "file is too big" in str(exc).lower():
                 await status_msg.edit_text(
-                    "<b>Ошибка: файл превышает лимит Telegram Bot API (20 МБ).</b>\n\n"
+                    "<b>[ОШИБКА] Файл превышает лимит Telegram Bot API (20 МБ)</b>\n\n"
                     "Серверы Telegram отклонили скачивание файла из-за ограничения размера в 20 МБ.\n\n"
                     "Очистите кэш (папки <code>user_data</code>, <code>dumps</code>, <code>webview</code>) перед упаковкой в ZIP. Чистый архив TData весит 1-3 МБ.",
                     reply_markup=back_keyboard("nav_accounts")
                 )
             else:
                 await status_msg.edit_text(
-                    f"Ошибка Telegram при скачивании файла: {quote_html(str(exc))}",
+                    f"<b>[ОШИБКА] Сбой при скачивании файла</b>\n\nПричина: {quote_html(str(exc))}",
                     reply_markup=back_keyboard("nav_accounts")
                 )
             return
         except Exception as exc:
             await state.clear()
             await status_msg.edit_text(
-                f"Не удалось скачать файл: {quote_html(str(exc))}",
+                f"<b>[ОШИБКА] Не удалось сохранить файл</b>\n\nПричина: {quote_html(str(exc))}",
                 reply_markup=back_keyboard("nav_accounts")
             )
             return
@@ -145,6 +145,7 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
             except ProxySecurityError:
                 await state.clear()
                 await status_msg.edit_text(
+                    "<b>[ОТКЛОНЕНО] Требуется активный прокси</b>\n\n"
                     "Включена политика Zero-Leak, но в базе нет активных прокси. Добавьте прокси перед импортом архива.",
                     reply_markup=back_keyboard("nav_accounts")
                 )
@@ -152,11 +153,12 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
 
             if bundle_result is not None:
                 await state.clear()
+                status_tag = "[УСПЕХ]" if bundle_result.imported_count > 0 else "[ОШИБКА]"
                 await status_msg.edit_text(
-                    f"Пакетный импорт архива завершен.\n"
-                    f"Успешно добавлено сессий: {bundle_result.imported_count}\n"
-                    f"Ошибок: {bundle_result.errors_count}\n"
-                    f"Добавлено прокси: {bundle_result.added_proxies} новых",
+                    f"<b>{status_tag} Пакетный импорт архива завершен</b>\n\n"
+                    f"• Успешно добавлено сессий: <code>{bundle_result.imported_count}</code>\n"
+                    f"• Ошибок импорта: <code>{bundle_result.errors_count}</code>\n"
+                    f"• Добавлено новых прокси: <code>{bundle_result.added_proxies}</code>",
                     reply_markup=back_keyboard("nav_accounts")
                 )
                 return
@@ -169,6 +171,7 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
         if settings.REQUIRE_STRICT_PROXIES and not single_proxy:
             await state.clear()
             await status_msg.edit_text(
+                "<b>[ОТКЛОНЕНО] Требуется активный прокси</b>\n\n"
                 "Включена политика Zero-Leak, но в базе нет активных прокси. Добавьте рабочий прокси перед загрузкой аккаунтов.",
                 reply_markup=back_keyboard("nav_accounts")
             )
@@ -182,7 +185,12 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
             if not success and msg == PASSWORD_REQUIRED:
                 await state.set_state(AccountState.waiting_for_password)
                 await state.update_data(archive_path=str(temp_target), file_type="zip")
-                await status_msg.edit_text("Для этой TData требуется пароль двухэтапной аутентификации (2FA). Введите его в ответном сообщении:")
+                await status_msg.edit_text(
+                    "<b>[ТРЕБУЕТСЯ 2FA] Введите пароль двухэтапной аутентификации</b>\n\n"
+                    "Для этого аккаунта включена двухфакторная защита Telegram.\n"
+                    "Отправьте ваш облачный пароль (2FA) следующим текстовым сообщением в этот чат:",
+                    reply_markup=back_keyboard("nav_accounts")
+                )
                 return
 
         elif expected_type == "session" or filename.lower().endswith(".session"):
@@ -190,12 +198,18 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
             if not success and msg == PASSWORD_REQUIRED:
                 await state.set_state(AccountState.waiting_for_password)
                 await state.update_data(archive_path=str(temp_target), file_type="session")
-                await status_msg.edit_text("Для этой сессии требуется пароль двухэтапной аутентификации (2FA). Введите его в ответном сообщении:")
+                await status_msg.edit_text(
+                    "<b>[ТРЕБУЕТСЯ 2FA] Введите пароль двухэтапной аутентификации</b>\n\n"
+                    "Для этой сессии включена двухфакторная защита Telegram.\n"
+                    "Отправьте ваш пароль (2FA) следующим текстовым сообщением в этот чат:",
+                    reply_markup=back_keyboard("nav_accounts")
+                )
                 return
         else:
             await state.clear()
             await status_msg.edit_text(
-                "Неподдерживаемый формат файла. Отправьте .zip архив с tdata или .session файл.",
+                "<b>[ОШИБКА] Неподдерживаемый формат файла</b>\n\n"
+                "Отправьте .zip архив с tdata или .session файл.",
                 reply_markup=back_keyboard("nav_accounts")
             )
             return
@@ -203,7 +217,9 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
         if not success or not info:
             await state.clear()
             await status_msg.edit_text(
-                f"Не удалось добавить аккаунт: {quote_html(msg or '')}",
+                f"<b>[ОШИБКА] Не удалось добавить аккаунт</b>\n\n"
+                f"Причина: <code>{quote_html(msg or 'Неизвестная ошибка конвертации')}</code>\n\n"
+                f"Убедитесь, что сессия не отозвана и архив содержит валидные данные авторизации.",
                 reply_markup=back_keyboard("nav_accounts")
             )
             return
@@ -213,9 +229,18 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
             if is_new:
                 name_display = quote_html(info.get('first_name') or info['phone'])
                 username_display = f" (@{quote_html(info['username'])})" if info.get('username') else ""
-                response_text = f"Аккаунт {name_display}{username_display} успешно добавлен в пул."
+                response_text = (
+                    f"<b>[УСПЕХ] Аккаунт успешно добавлен в пул</b>\n\n"
+                    f"• Телефон: <code>{quote_html(info['phone'])}</code>\n"
+                    f"• Имя: <b>{name_display}</b>{username_display}\n"
+                    f"• Статус: активен и готов к работе"
+                )
             else:
-                response_text = f"Аккаунт {quote_html(info['phone'])} обновлен в базе."
+                response_text = (
+                    f"<b>[УСПЕХ] Аккаунт успешно обновлен</b>\n\n"
+                    f"• Телефон: <code>{quote_html(info['phone'])}</code>\n"
+                    f"• Статус: данные сессии актуализированы в базе"
+                )
 
         await state.clear()
         await status_msg.edit_text(response_text, reply_markup=back_keyboard("nav_accounts"))
@@ -249,6 +274,7 @@ async def handle_account_password(message: Message, state: FSMContext):
     if settings.REQUIRE_STRICT_PROXIES and not active_proxy:
         await state.clear()
         await status_msg.edit_text(
+            "<b>[ОТКЛОНЕНО] Требуется активный прокси</b>\n\n"
             "Включена политика Zero-Leak, но в базе нет активных прокси. Добавьте рабочий прокси перед подтверждением пароля.",
             reply_markup=back_keyboard("nav_accounts")
         )
@@ -270,14 +296,17 @@ async def handle_account_password(message: Message, state: FSMContext):
             Path(archive_path).unlink(missing_ok=True)
             await state.clear()
             await status_msg.edit_text(
-                f"Ошибка авторизации: {quote_html(err_desc)}\nПревышено количество попыток. Загрузите файл заново.",
+                f"<b>[ОШИБКА] Превышено количество попыток 2FA</b>\n\n"
+                f"Причина: <code>{quote_html(err_desc)}</code>\n"
+                f"Авторизация отменена. Загрузите файл заново.",
                 reply_markup=back_keyboard("nav_accounts")
             )
             return
 
         await state.update_data(attempts=attempts)
         await status_msg.edit_text(
-            f"Ошибка: {quote_html(err_desc)}.\nПопытка {attempts} из 3. Введите пароль еще раз:",
+            f"<b>[ОШИБКА] Неверный пароль 2FA</b>\n\n"
+            f"Попытка {attempts} из 3. Проверьте пароль и введите его еще раз в ответном сообщении:",
             reply_markup=back_keyboard("nav_accounts")
         )
         return
@@ -291,9 +320,18 @@ async def handle_account_password(message: Message, state: FSMContext):
                 two_fa_password=password
             )
             if is_new:
-                response_text = f"Аккаунт {quote_html(info['phone'])} успешно авторизован и сохранен."
+                response_text = (
+                    f"<b>[УСПЕХ] Аккаунт успешно авторизован и добавлен в пул</b>\n\n"
+                    f"• Телефон: <code>{quote_html(info['phone'])}</code>\n"
+                    f"• 2FA пароль: подтвержден и сохранен\n"
+                    f"• Статус: активен и готов к работе"
+                )
             else:
-                response_text = f"Аккаунт {quote_html(info['phone'])} успешно обновлен с 2FA паролем."
+                response_text = (
+                    f"<b>[УСПЕХ] Аккаунт успешно обновлен</b>\n\n"
+                    f"• Телефон: <code>{quote_html(info['phone'])}</code>\n"
+                    f"• 2FA пароль: успешно актуализирован"
+                )
 
         await state.clear()
         await status_msg.edit_text(response_text, reply_markup=back_keyboard("nav_accounts"))
@@ -429,7 +467,9 @@ async def callback_check_all(callback: CallbackQuery):
 
     await safe_edit_text(
         status_msg,
-        f"Проверка завершена.\nВалидных аккаунтов: {valid_count}\nОтозванных/недоступных: {banned_count}",
+        f"<b>[ИТОГ] Проверка авторизации завершена</b>\n\n"
+        f"• Валидных и активных: <code>{valid_count}</code>\n"
+        f"• Отозванных или недоступных: <code>{banned_count}</code>",
         reply_markup=back_keyboard("nav_accounts")
     )
     await callback.answer()
@@ -464,7 +504,9 @@ async def callback_check_spambot(callback: CallbackQuery):
 
     await safe_edit_text(
         status_msg,
-        f"Проверка @SpamBot завершена.\nБез ограничений: {clean_count}\nСо спамблоком: {limited_count}",
+        f"<b>[ИТОГ] Проверка через @SpamBot завершена</b>\n\n"
+        f"• Без ограничений (чистые): <code>{clean_count}</code>\n"
+        f"• Со спамблоком: <code>{limited_count}</code>",
         reply_markup=back_keyboard("nav_accounts")
     )
     await callback.answer()

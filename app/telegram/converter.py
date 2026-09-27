@@ -9,6 +9,7 @@ from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from opentele2.td import TDesktop
 from opentele2.api import CreateNewSession
+from opentele2.exception import OpenTeleException
 
 from app.core.config import settings
 from app.core.security import safe_extract_zip, encrypt_session_string
@@ -132,7 +133,7 @@ async def convert_tdata_archive(
             return True, "Успешно", account_info
         finally:
             await telethon_client.disconnect()
-    except Exception as exc:
+    except (Exception, OpenTeleException) as exc:
         exc_name = type(exc).__name__.lower()
         exc_str = str(exc).lower()
         if "nopasswordprovided" in exc_name or "sessionpasswordneeded" in exc_name or "password" in exc_str:
