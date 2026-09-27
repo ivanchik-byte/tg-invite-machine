@@ -93,6 +93,8 @@ REQUIRE_STRICT_PROXIES=true
 
 ## 5. Запуск через Docker Compose (Рекомендуемый)
 
+### 5.1. Linux / macOS
+
 Docker изолирует все системные зависимости и автоматически монтирует том с базой данных `data/`.
 
 Запуск в фоновом режиме:
@@ -107,6 +109,36 @@ docker compose logs -f
 
 Остановка сервиса:
 ```bash
+docker compose down
+```
+
+### 5.2. Windows (через Docker Desktop)
+
+1. Скачайте и установите [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+2. В процессе установки убедитесь, что выбрана опция **Use WSL 2 instead of Hyper-V** (рекомендуется).
+3. Запустите Docker Desktop и убедитесь, что в левом нижнем углу статус зеленый (`Engine running`).
+4. Откройте **PowerShell** от имени обычного пользователя или Windows Terminal, перейдите в папку проекта:
+```powershell
+cd tg-invite-machine
+
+# Создание .env файла из примера
+Copy-Item .env.example .env
+```
+5. Сгенерируйте ключ шифрования:
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+6. Откройте `.env` в блокноте (`notepad .env`), внесите полученный ключ и ваши Telegram-токены (`BOT_TOKEN`, `ADMIN_ID`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`).
+7. Запустите проект через Docker Compose:
+```powershell
+docker compose up -d --build
+```
+8. Логи работы бота в реальном времени:
+```powershell
+docker compose logs -f
+```
+9. Остановка контейнера:
+```powershell
 docker compose down
 ```
 

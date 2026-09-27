@@ -41,6 +41,20 @@
 
 ---
 
+## Скриншоты интерфейса
+
+<p align="center">
+  <img src="docs/images/sessions_pool.png" alt="Управление пулом сессий" width="48%" />
+  <img src="docs/images/inviter_params.png" alt="Параметры инвайтинга" width="48%" />
+</p>
+<p align="center">
+  <img src="docs/images/collector_export.png" alt="Сбор аудитории и выгрузка" width="48%" />
+  <img src="docs/images/group_invites.png" alt="Процесс инвайтинга в группу" width="48%" />
+</p>
+<p align="center"><i>Управление пулом сессий | Выбор лимитов и задержек | Сбор и дедупликация аудитории | Результат инвайтинга</i></p>
+
+---
+
 ## Возможности
 
 - **Импорт сессий и двухэтапная аутентификация (2FA)**:
@@ -167,7 +181,7 @@ python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().
 
 Заполните значения в созданном файле `.env`.
 
-### 2. Запуск через Docker Compose (рекомендуется)
+### 2. Запуск через Docker Compose (Linux / macOS)
 ```bash
 docker compose up -d --build
 ```
@@ -177,7 +191,37 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-### 3. Локальный запуск без Docker
+### 3. Запуск через Docker на Windows (Docker Desktop)
+
+1. Установите [Docker Desktop для Windows](https://www.docker.com/products/docker-desktop/) (убедитесь, что включен бэкенд WSL 2 в настройках Docker Desktop).
+2. Запустите Docker Desktop и дождитесь статуса `Engine running`.
+3. Откройте **PowerShell** или **Терминал Windows** в папке проекта:
+```powershell
+# Клонирование репозитория (если еще не склонирован)
+git clone https://github.com/ivanchik-byte/tg-invite-machine.git
+cd tg-invite-machine
+
+# Создание файла конфигурации
+Copy-Item .env.example .env
+
+# Генерация ключа Fernet через Python (или любой установленный Python)
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+4. Откройте файл `.env` в блокноте или редакторе кода (`notepad .env`), укажите ваш `BOT_TOKEN`, `ADMIN_ID`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` и вставьте сгенерированный ключ `ENCRYPTION_KEY`.
+5. Соберите и запустите контейнер:
+```powershell
+docker compose up -d --build
+```
+6. Для отслеживания логов выполните:
+```powershell
+docker compose logs -f
+```
+7. Для остановки сервиса:
+```powershell
+docker compose down
+```
+
+### 4. Локальный запуск без Docker
 ```bash
 python3 -m venv venv
 source venv/bin/activate
