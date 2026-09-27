@@ -3,7 +3,7 @@ import string
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Set, Optional, Callable, Awaitable
-from telethon import TelegramClient
+from telethon import TelegramClient, errors
 from telethon.tl.types import (
     Channel,
     User,
@@ -69,22 +69,29 @@ async def collect_chat_members(
             alphabet = [""] + list(string.ascii_lowercase) + cyrillic + [str(d) for d in range(10)]
             seen_ids: Set[int] = set()
 
-            for query_char in alphabet:
-                search_filter = ChannelParticipantsSearch(query_char) if query_char else None
-                async for participant in client.iter_participants(chat_entity, filter=search_filter, limit=5000):
-                    if not isinstance(participant, User) or participant.bot or participant.deleted:
-                        continue
-                    if participant.id in seen_ids:
-                        continue
+            try:
+                for query_char in alphabet:
+                    search_filter = ChannelParticipantsSearch(query_char) if query_char else None
+                    async for participant in client.iter_participants(chat_entity, filter=search_filter, limit=5000):
+                        if not isinstance(participant, User) or participant.bot or participant.deleted:
+                            continue
+                        if participant.id in seen_ids:
+                            continue
 
-                    seen_ids.add(participant.id)
-                    collected_users[participant.id] = participant
+                        seen_ids.add(participant.id)
+                        collected_users[participant.id] = participant
 
-                if progress_callback:
-                    await progress_callback(len(collected_users), f"Собрано {len(collected_users)} участников...")
+                    if progress_callback:
+                        await progress_callback(len(collected_users), f"Собрано {len(collected_users)} участников...")
 
-                if len(collected_users) > 10000:
-                    break
+                    if len(collected_users) > 10000:
+                        break
+            except errors.ChatAdminRequiredError:
+                if not collected_users:
+                    raise RuntimeError(
+                        "Список участников этой супергруппы скрыт администрацией. "
+                        "Используйте режим «Собрать активных по дням» для сбора авторов сообщений."
+                    )
 
         new_saved = 0
         existing_skipped = 0
