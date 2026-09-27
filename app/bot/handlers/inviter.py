@@ -607,7 +607,8 @@ async def _create_and_launch_task(
     message_id = status_msg.message_id
 
     async def update_status_ui(task_id: int, invited: int, total: int, floods: int, status_text: str, is_final: bool = False):
-        if not invite_task_manager.should_update_ui(min_interval=3.0, is_final=is_final):
+        is_immediate = is_final or ("добавлен" in status_text)
+        if not invite_task_manager.should_update_ui(min_interval=1.5, is_final=is_immediate):
             return
 
         target_total = selected_limit if selected_limit else total

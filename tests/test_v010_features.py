@@ -301,3 +301,120 @@ async def test_account_api_id_and_telethon_client(test_session, monkeypatch):
     assert client.api_id == 2040
     assert client.api_hash == "b18441a1ff607e10a989891a5462e627"
 
+
+@pytest.mark.asyncio
+async def test_inviter_detects_missing_invitees_and_silent_omissions():
+    from telethon.tl.types.messages import InvitedUsers
+    from telethon.tl.types import MissingInvitee, Updates, User
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as session:
+        acc = Account(
+            phone="+1234567890",
+            session_encrypted="dummy",
+            status="active",
+            is_active=True
+        )
+        target = TargetGroup(
+            title="Target Chat",
+            username="target_chat",
+            tg_id=-1001234567890,
+            access_hash=987654321,
+            chat_type="supergroup"
+        )
+        session.add_all([acc, target])
+        await session.flush()
+
+        # User 1: will be in missing_invitees (privacy)
+        m1 = AudienceMember(tg_id=111, username="private_user", source_chat="source_chat", status="pending")
+        # User 2: will have empty updates (already in chat)
+        m2 = AudienceMember(tg_id=222, username="already_user", source_chat="source_chat", status="pending")
+        # User 3: will have updates.users with ID (genuine invite)
+        m3 = AudienceMember(tg_id=333, username="success_user", source_chat="source_chat", status="pending")
+        session.add_all([m1, m2, m3])
+
+        task = InviteTask(
+            target_group_id=target.id,
+            speed_profile="fast",
+            max_invites=5,
+            status="running",
+            total_targets=3
+        )
+        session.add(task)
+        await session.commit()
+        task_id = task.id
+
+    orchestrator = InviterOrchestrator(task_id=task_id)
+
+    # Return missing_invitees for user 111
+    res_private = InvitedUsers(
+        updates=Updates(updates=[], users=[], chats=[], date=None, seq=0),
+        missing_invitees=[MissingInvitee(user_id=111, premium_would_allow_invite=False, premium_required_for_pm=False)]
+    )
+    # Return empty updates for user 222
+    res_already = InvitedUsers(
+        updates=Updates(updates=[], users=[], chats=[], date=None, seq=0),
+        missing_invitees=[]
+    )
+    # Return genuine update for user 333
+    mock_added_user = MagicMock()
+    mock_added_user.id = 333
+    res_success = InvitedUsers(
+        updates=Updates(updates=[], users=[mock_added_user], chats=[], date=None, seq=0),
+        missing_invitees=[]
+    )
+
+    mock_client = AsyncMock()
+    mock_client.connect = AsyncMock()
+    mock_client.disconnect = AsyncMock()
+
+    async def fake_get_entity(identifier):
+        u = MagicMock()
+        if identifier == "private_user":
+            u.id = 111
+        elif identifier == "already_user":
+            u.id = 222
+        else:
+            u.id = 333
+        return u
+
+    async def fake_call(req):
+        target_u = req.users[0]
+        uid = getattr(target_u, "id", None)
+        if uid == 111:
+            return res_private
+        elif uid == 222:
+            return res_already
+        else:
+            return res_success
+
+    mock_client.get_entity = AsyncMock(side_effect=fake_get_entity)
+    mock_client.side_effect = fake_call
+
+    with patch("app.services.inviter_service.get_telethon_client", return_value=mock_client), \
+         patch("app.services.inviter_service.simulate_pre_invite_reading", AsyncMock()), \
+         patch("app.services.inviter_service.calculate_delay", return_value=0.001), \
+         patch("random.uniform", return_value=0.001):
+        await orchestrator.run(session_factory=session_factory)
+
+    async with session_factory() as session:
+        t = await session.get(InviteTask, task_id)
+        assert t.status == "completed"
+        assert t.successful_invites == 1
+
+        db_m1 = (await session.execute(select(AudienceMember).where(AudienceMember.tg_id == 111))).scalar_one()
+        assert db_m1.status == "restricted"
+
+        db_m2 = (await session.execute(select(AudienceMember).where(AudienceMember.tg_id == 222))).scalar_one()
+        assert db_m2.status == "already_participant"
+
+        db_m3 = (await session.execute(select(AudienceMember).where(AudienceMember.tg_id == 333))).scalar_one()
+        assert db_m3.status == "invited"
+
+    await engine.dispose()
+
+

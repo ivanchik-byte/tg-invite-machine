@@ -313,8 +313,49 @@ class InviterOrchestrator:
                 else:
                     raise ValueError("Пользователь не найден")
 
-                await client(InviteToChannelRequest(target_input, [user_to_add]))
-                invite_success = True
+                res = await client(InviteToChannelRequest(target_input, [user_to_add]))
+
+                if isinstance(res, bool):
+                    invite_success = res
+                else:
+                    # Telegram returns messages.InvitedUsers with missing_invitees if restricted
+                    missing_uids = set()
+                    if hasattr(res, "missing_invitees") and isinstance(res.missing_invitees, list) and res.missing_invitees:
+                        missing_uids.update(m.user_id for m in res.missing_invitees if hasattr(m, "user_id"))
+
+                    added_uids = set()
+                    if hasattr(res, "updates") and hasattr(res.updates, "users") and isinstance(res.updates.users, list):
+                        added_uids.update(u.id for u in res.updates.users if hasattr(u, "id"))
+                    elif hasattr(res, "users") and isinstance(res.users, list):
+                        added_uids.update(u.id for u in res.users if hasattr(u, "id"))
+
+                    target_uid = target_member.tg_id
+                    if not target_uid:
+                        for attr in ("id", "user_id"):
+                            val = getattr(user_to_add, attr, None)
+                            if isinstance(val, int):
+                                target_uid = val
+                                break
+
+                    if missing_uids or (target_uid and target_uid in missing_uids):
+                        invite_success = False
+                        error_status = "restricted"
+                        premium_req = any(
+                            getattr(m, "premium_would_allow_invite", False) or getattr(m, "premium_required_for_pm", False)
+                            for m in getattr(res, "missing_invitees", [])
+                        )
+                        error_reason = "Приватность (требуется Premium)" if premium_req else "Приватность пользователя"
+                    elif hasattr(res, "updates") and isinstance(getattr(res.updates, "users", None), list) and not added_uids:
+                        # Telegram silently ignored invite (user already in group or privacy)
+                        invite_success = False
+                        error_status = "already_participant"
+                        error_reason = "Уже состоит в группе или скрыт"
+                    elif target_uid and added_uids and target_uid not in added_uids:
+                        invite_success = False
+                        error_status = "restricted"
+                        error_reason = "Приватность пользователя"
+                    else:
+                        invite_success = True
 
             except UserPrivacyRestrictedError:
                 error_status = "restricted"
@@ -440,21 +481,35 @@ class InviterOrchestrator:
                         )
                     break
 
+                user_tag = f"@{target_member.username}" if target_member.username else (
+                    target_member.first_name or f"id:{target_member.tg_id or member_id}"
+                )
+                if invite_success:
+                    current_status = f"Пользователь {user_tag} добавлен"
+                else:
+                    current_status = f"Пользователь {user_tag}: пропуск ({error_reason})"
+
                 if progress_callback and task:
-                    progress_info = (
-                        f"В процессе [{task.speed_profile}]: добавлено {task.successful_invites} | "
-                        f"приватных {task.restricted_count} | флуд {task.flood_errors}"
-                    )
                     await progress_callback(
                         self.task_id,
                         task.successful_invites,
                         task.total_targets,
                         task.flood_errors,
-                        progress_info,
+                        current_status,
                         is_final=False
                     )
 
-            pause_time = calculate_delay(speed_profile)
+            if invite_success or error_status in ("flood_wait", "peer_flood"):
+                pause_time = calculate_delay(speed_profile)
+            else:
+                is_turbo = speed_profile.startswith("custom:") and any(
+                    speed_profile.startswith(f"custom:{p}:") for p in ("0", "1")
+                )
+                if is_turbo:
+                    pause_time = calculate_delay(speed_profile)
+                else:
+                    pause_time = random.uniform(2.0, 4.0)
+
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=pause_time)
                 break
