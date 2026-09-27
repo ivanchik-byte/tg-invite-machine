@@ -17,6 +17,7 @@ from app.bot.keyboards import accounts_menu_keyboard, back_keyboard, accounts_pa
 from app.core.utils import safe_edit_text
 from app.telegram.converter import convert_tdata_archive, import_session_file, PASSWORD_REQUIRED
 from app.telegram.client_factory import get_telethon_client, decrypt_proxy_password, build_proxy_dict, ProxySecurityError
+from app.services.account_service import import_account_bundle, register_single_account
 from app.services.spambot_service import check_account_spambot
 from app.services.proxy_service import import_proxies_from_text
 from app.services.export_service import generate_accounts_excel
@@ -82,76 +83,30 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
         await bot.download(document, destination=temp_target)
 
         if filename.lower().endswith(".zip"):
-            inspect_dir = Path(tempfile.mkdtemp(prefix="bundle_check_"))
             try:
-                safe_extract_zip(temp_target, inspect_dir)
-                session_files = list(inspect_dir.rglob("*.session"))[:MAX_SESSION_FILES]
-                if len(session_files) >= 1:
-                    proxies_file = next(inspect_dir.rglob("*proxy*.txt"), None)
-                    added_proxies = 0
-                    if proxies_file:
-                        async with async_session_factory() as session:
-                            added_proxies, _ = await import_proxies_from_text(
-                                session, proxies_file.read_text(encoding="utf-8")
-                            )
+                bundle_result = await import_account_bundle(
+                    temp_target,
+                    session_factory=async_session_factory,
+                    max_sessions=MAX_SESSION_FILES
+                )
+            except ProxySecurityError:
+                await state.clear()
+                await status_msg.edit_text(
+                    "Включена политика Zero-Leak, но в базе нет активных прокси. Добавьте прокси перед импортом архива.",
+                    reply_markup=back_keyboard("nav_accounts")
+                )
+                return
 
-                    imported_count = 0
-                    errors_count = 0
-                    async with async_session_factory() as session:
-                        existing_proxies = (await session.execute(select(Proxy).where(Proxy.is_active == True))).scalars().all()
-
-                        if settings.REQUIRE_STRICT_PROXIES and not existing_proxies:
-                            await state.clear()
-                            await status_msg.edit_text(
-                                "Включена политика Zero-Leak, но в базе нет активных прокси. Добавьте прокси перед импортом архива.",
-                                reply_markup=back_keyboard("nav_accounts")
-                            )
-                            return
-
-                        for idx, s_path in enumerate(session_files):
-                            chosen_proxy = None
-                            proxy_dict = None
-                            if existing_proxies:
-                                chosen_proxy = existing_proxies[idx % len(existing_proxies)]
-                                proxy_dict = build_proxy_dict(chosen_proxy)
-
-                            ok, s_msg, s_info = await import_session_file(s_path, proxy=proxy_dict)
-                            if ok and s_info:
-                                existing = (await session.execute(select(Account).where(Account.phone == s_info["phone"]))).scalars().first()
-                                if existing:
-                                    existing.session_encrypted = s_info["session_encrypted"]
-                                    existing.status = "active"
-                                    existing.is_active = True
-                                    if chosen_proxy:
-                                        existing.proxy_id = chosen_proxy.id
-                                else:
-                                    acc = Account(
-                                        phone=s_info["phone"],
-                                        session_encrypted=s_info["session_encrypted"],
-                                        first_name=s_info.get("first_name"),
-                                        last_name=s_info.get("last_name"),
-                                        username=s_info.get("username"),
-                                        status="active",
-                                        is_active=True,
-                                        proxy_id=chosen_proxy.id if chosen_proxy else None
-                                    )
-                                    session.add(acc)
-                                imported_count += 1
-                            else:
-                                errors_count += 1
-                        await session.commit()
-
-                    await state.clear()
-                    await status_msg.edit_text(
-                        f"Пакетный импорт архива завершен.\n"
-                        f"Успешно добавлено сессий: {imported_count}\n"
-                        f"Ошибок: {errors_count}\n"
-                        f"Добавлено прокси: {added_proxies} новых",
-                        reply_markup=back_keyboard("nav_accounts")
-                    )
-                    return
-            finally:
-                shutil.rmtree(inspect_dir, ignore_errors=True)
+            if bundle_result is not None:
+                await state.clear()
+                await status_msg.edit_text(
+                    f"Пакетный импорт архива завершен.\n"
+                    f"Успешно добавлено сессий: {bundle_result.imported_count}\n"
+                    f"Ошибок: {bundle_result.errors_count}\n"
+                    f"Добавлено прокси: {bundle_result.added_proxies} новых",
+                    reply_markup=back_keyboard("nav_accounts")
+                )
+                return
 
         async with async_session_factory() as session:
             single_proxy = (await session.execute(
@@ -190,37 +145,13 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
             return
 
         async with async_session_factory() as session:
-            existing = (await session.execute(
-                select(Account).where(Account.phone == info["phone"])
-            )).scalars().first()
-
-            if existing:
-                existing.session_encrypted = info["session_encrypted"]
-                existing.first_name = info.get("first_name")
-                existing.last_name = info.get("last_name")
-                existing.username = info.get("username")
-                existing.status = "active"
-                existing.is_active = True
-                if chosen_proxy_id:
-                    existing.proxy_id = chosen_proxy_id
-                await session.commit()
-                response_text = f"Аккаунт {quote_html(info['phone'])} обновлен в базе."
-            else:
-                acc = Account(
-                    phone=info["phone"],
-                    session_encrypted=info["session_encrypted"],
-                    first_name=info.get("first_name"),
-                    last_name=info.get("last_name"),
-                    username=info.get("username"),
-                    status="active",
-                    is_active=True,
-                    proxy_id=chosen_proxy_id
-                )
-                session.add(acc)
-                await session.commit()
+            acc, is_new = await register_single_account(session, info, proxy_id=chosen_proxy_id)
+            if is_new:
                 name_display = quote_html(info.get('first_name') or info['phone'])
                 username_display = f" (@{quote_html(info['username'])})" if info.get('username') else ""
                 response_text = f"Аккаунт {name_display}{username_display} успешно добавлен в пул."
+            else:
+                response_text = f"Аккаунт {quote_html(info['phone'])} обновлен в базе."
 
         await state.clear()
         await status_msg.edit_text(response_text, reply_markup=back_keyboard("nav_accounts"))
@@ -283,30 +214,11 @@ async def handle_account_password(message: Message, state: FSMContext):
 
     try:
         async with async_session_factory() as session:
-            existing = (await session.execute(
-                select(Account).where(Account.phone == info["phone"])
-            )).scalars().first()
-
-            if existing:
-                existing.session_encrypted = info["session_encrypted"]
-                existing.status = "active"
-                if chosen_proxy_id:
-                    existing.proxy_id = chosen_proxy_id
-                await session.commit()
-                response_text = f"Аккаунт {quote_html(info['phone'])} успешно обновлен с 2FA паролем."
-            else:
-                acc = Account(
-                    phone=info["phone"],
-                    session_encrypted=info["session_encrypted"],
-                    first_name=info.get("first_name"),
-                    last_name=info.get("last_name"),
-                    username=info.get("username"),
-                    status="active",
-                    proxy_id=chosen_proxy_id
-                )
-                session.add(acc)
-                await session.commit()
+            acc, is_new = await register_single_account(session, info, proxy_id=chosen_proxy_id)
+            if is_new:
                 response_text = f"Аккаунт {quote_html(info['phone'])} успешно авторизован и сохранен."
+            else:
+                response_text = f"Аккаунт {quote_html(info['phone'])} успешно обновлен с 2FA паролем."
 
         await state.clear()
         await status_msg.edit_text(response_text, reply_markup=back_keyboard("nav_accounts"))

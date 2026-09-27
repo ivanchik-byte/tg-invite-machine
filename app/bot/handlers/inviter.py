@@ -16,6 +16,7 @@ from app.models.models import Account, AudienceMember, TargetGroup, InviteTask
 from app.bot.states import InviterState
 from app.bot.keyboards import inviter_menu_keyboard, speed_profile_keyboard, back_keyboard, migrate_confirm_keyboard
 from app.services.inviter_service import InviterOrchestrator
+from app.services.task_manager import invite_task_manager
 from app.telegram.client_factory import get_telethon_client
 from app.core.utils import normalize_chat_identifier, safe_edit_text
 
@@ -31,7 +32,7 @@ last_ui_update_time: float = 0.0
 @inviter_router.callback_query(F.data == "nav_inviter")
 async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    is_running = active_orchestrator is not None and active_task_handle is not None and not active_task_handle.done()
+    is_running = invite_task_manager.is_running() or (active_orchestrator is not None and active_task_handle is not None and not active_task_handle.done())
 
     async with async_session_factory() as session:
         pending_count = (await session.execute(
@@ -286,11 +287,8 @@ async def _create_and_launch_task(target_group_id: int, target_link: str, chat_t
     message_id = status_msg.message_id
 
     async def update_status_ui(task_id: int, invited: int, total: int, floods: int, status_text: str, is_final: bool = False):
-        global last_ui_update_time
-        current_now = time.monotonic()
-        if not is_final and (current_now - last_ui_update_time < 3.0):
+        if not invite_task_manager.should_update_ui(min_interval=3.0, is_final=is_final):
             return
-        last_ui_update_time = current_now
 
         ui_text = (
             f"Инвайтинг в {quote_html(target_link)}:\n\n"
@@ -308,8 +306,10 @@ async def _create_and_launch_task(target_group_id: int, target_link: str, chat_t
         except Exception:
             pass
 
-    active_task_handle = asyncio.create_task(
-        active_orchestrator.run(
+    active_task_handle = invite_task_manager.start(
+        task_id=active_task_id,
+        orchestrator=active_orchestrator,
+        coro=active_orchestrator.run(
             session_factory=async_session_factory,
             progress_callback=update_status_ui
         )
@@ -323,8 +323,9 @@ async def _create_and_launch_task(target_group_id: int, target_link: str, chat_t
 @inviter_router.callback_query(F.data == "invite_pause")
 async def callback_invite_pause(callback: CallbackQuery):
     global active_orchestrator
-    if active_orchestrator:
-        active_orchestrator.pause()
+    orch = active_orchestrator or invite_task_manager.active_orchestrator
+    if orch:
+        orch.pause()
         await callback.answer("Инвайтинг поставлен на паузу.")
         await callback.message.edit_text(
             "Инвайтинг на паузе. Нажмите 'Возобновить' для продолжения.",
@@ -336,8 +337,9 @@ async def callback_invite_pause(callback: CallbackQuery):
 @inviter_router.callback_query(F.data == "invite_resume")
 async def callback_invite_resume(callback: CallbackQuery):
     global active_orchestrator
-    if active_orchestrator:
-        active_orchestrator.resume()
+    orch = active_orchestrator or invite_task_manager.active_orchestrator
+    if orch:
+        orch.resume()
         await callback.answer("Инвайтинг возобновлен.")
         await callback.message.edit_text(
             "Инвайтинг возобновлен и выполняется.",
@@ -349,14 +351,18 @@ async def callback_invite_resume(callback: CallbackQuery):
 @inviter_router.callback_query(F.data == "invite_stop")
 async def callback_invite_stop(callback: CallbackQuery):
     global active_orchestrator, active_task_handle, active_task_id
-    if active_orchestrator:
-        active_orchestrator.stop()
-        if active_task_handle and not active_task_handle.done():
-            active_task_handle.cancel()
-        stopped_id = active_task_id
+    orch = active_orchestrator or invite_task_manager.active_orchestrator
+    handle = active_task_handle or invite_task_manager.active_task_handle
+    stopped_id = active_task_id or invite_task_manager.active_task_id
+
+    if orch:
+        orch.stop()
+        if handle and not handle.done():
+            handle.cancel()
         active_orchestrator = None
         active_task_handle = None
         active_task_id = None
+        invite_task_manager.stop()
         if stopped_id is not None:
             try:
                 async with async_session_factory() as session:

@@ -481,4 +481,92 @@ def test_zip_single_session_support(tmp_path):
     assert len(session_files) == 1
     assert len(session_files) >= 1
 
+@pytest.mark.asyncio
+async def test_invite_task_manager_lifecycle():
+    import asyncio
+    from app.services.task_manager import InviteTaskManager
+
+    mgr = InviteTaskManager()
+    assert mgr.is_running() is False
+    assert mgr.get_active_task_id() is None
+
+    class MockOrchestrator:
+        def __init__(self):
+            self.paused = False
+            self.resumed = False
+            self.stopped = False
+
+        def pause(self):
+            self.paused = True
+
+        def resume(self):
+            self.resumed = True
+
+        def stop(self):
+            self.stopped = True
+
+    orch = MockOrchestrator()
+
+    async def dummy_job():
+        await asyncio.sleep(0.5)
+
+    task = mgr.start(task_id=99, orchestrator=orch, coro=dummy_job())
+    assert mgr.is_running() is True
+    assert mgr.get_active_task_id() == 99
+
+    coro_fail = dummy_job()
+    try:
+        with pytest.raises(RuntimeError, match="already running"):
+            mgr.start(task_id=100, orchestrator=orch, coro=coro_fail)
+    finally:
+        coro_fail.close()
+
+    assert mgr.pause() is True
+    assert orch.paused is True
+
+    assert mgr.resume() is True
+    assert orch.resumed is True
+
+    # Test UI update throttling
+    assert mgr.should_update_ui(min_interval=3.0, is_final=False) is True
+    assert mgr.should_update_ui(min_interval=3.0, is_final=False) is False
+    assert mgr.should_update_ui(min_interval=3.0, is_final=True) is True
+
+    assert mgr.stop() is True
+    assert orch.stopped is True
+    task.cancel()
+
+@pytest.mark.asyncio
+async def test_register_single_account():
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from app.models.models import Base
+    from app.services.account_service import register_single_account
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    info = {
+        "phone": "+79991234567",
+        "session_encrypted": "enc_data_test",
+        "first_name": "Ivan",
+        "username": "ivan_dev"
+    }
+
+    async with session_factory() as session:
+        acc, is_new = await register_single_account(session, info, proxy_id=None)
+        assert is_new is True
+        assert acc.phone == "+79991234567"
+        assert acc.username == "ivan_dev"
+
+        info["first_name"] = "Ivan Updated"
+        acc2, is_new2 = await register_single_account(session, info, proxy_id=None)
+        assert is_new2 is False
+        assert acc2.id == acc.id
+        assert acc2.first_name == "Ivan Updated"
+
+    await engine.dispose()
+
+
 
