@@ -9,7 +9,8 @@ from telethon.tl.types import (
     User,
     ChannelParticipantsSearch,
 )
-from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,13 +32,29 @@ async def collect_chat_members(
     await client.connect()
 
     try:
-        chat_entity = await client.get_entity(chat_identifier)
+        try:
+            chat_entity = await client.get_entity(chat_identifier)
+        except Exception:
+            if "joinchat/" in str(chat_identifier) or "+" in str(chat_identifier):
+                invite_hash = str(chat_identifier).split("/")[-1].replace("+", "")
+                updates = await client(ImportChatInviteRequest(invite_hash))
+                chat_entity = updates.chats[0]
+            else:
+                raise
+
         if isinstance(chat_entity, Channel) and chat_entity.broadcast:
             full_channel = await client(GetFullChannelRequest(chat_entity))
             if full_channel.full_chat.linked_chat_id:
                 chat_entity = await client.get_entity(full_channel.full_chat.linked_chat_id)
             else:
                 raise ValueError("Указанный канал не имеет открытой группы обсуждений для сбора участников")
+
+        # Автоматический вход аккаунта в группу если он еще не состоит
+        if isinstance(chat_entity, Channel) and not getattr(chat_entity, "left", False) and getattr(chat_entity, "participant", None) is None:
+            try:
+                await client(JoinChannelRequest(chat_entity))
+            except Exception:
+                pass
 
         collected_users: dict[int, User] = {}
         cutoff_date = None
@@ -71,20 +88,24 @@ async def collect_chat_members(
 
             try:
                 for query_char in alphabet:
-                    search_filter = ChannelParticipantsSearch(query_char) if query_char else None
-                    async for participant in client.iter_participants(chat_entity, filter=search_filter, limit=5000):
-                        if not isinstance(participant, User) or participant.bot or participant.deleted:
-                            continue
-                        if participant.id in seen_ids:
-                            continue
+                    try:
+                        search_filter = ChannelParticipantsSearch(query_char) if query_char else None
+                        async for participant in client.iter_participants(chat_entity, filter=search_filter, limit=5000):
+                            if not isinstance(participant, User) or participant.bot or participant.deleted:
+                                continue
+                            if participant.id in seen_ids:
+                                continue
 
-                        seen_ids.add(participant.id)
-                        collected_users[participant.id] = participant
+                            seen_ids.add(participant.id)
+                            collected_users[participant.id] = participant
 
-                    if progress_callback:
-                        await progress_callback(len(collected_users), f"Собрано {len(collected_users)} участников...")
+                        if progress_callback:
+                            await progress_callback(len(collected_users), f"Собрано {len(collected_users)} участников...")
 
-                    if len(collected_users) > 10000:
+                        if len(collected_users) > 10000:
+                            break
+                    except errors.FloodWaitError:
+                        # Если Telegram притормозил поиск по алфавиту, сохраняем уже найденных
                         break
             except errors.ChatAdminRequiredError:
                 if not collected_users:

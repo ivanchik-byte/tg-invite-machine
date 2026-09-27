@@ -262,10 +262,7 @@ class InviterOrchestrator:
                     break
 
                 target_query = select(AudienceMember).where(
-                    and_(
-                        AudienceMember.status == "pending",
-                        (AudienceMember.target_group_id.is_(None)) | (AudienceMember.target_group_id == target_group.id)
-                    )
+                    AudienceMember.status == "pending"
                 ).order_by(AudienceMember.id.asc()).limit(1)
 
                 if not is_sqlite:
