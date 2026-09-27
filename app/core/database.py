@@ -52,4 +52,12 @@ async def init_db() -> None:
                 if task_cols:
                     if "max_invites" not in task_cols:
                         conn.execute(text("ALTER TABLE invite_tasks ADD COLUMN max_invites INTEGER;"))
+                aud_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(audience_members)")).fetchall()]
+                if aud_cols:
+                    if "access_hash" not in aud_cols:
+                        conn.execute(text("ALTER TABLE audience_members ADD COLUMN access_hash BIGINT;"))
+                group_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(target_groups)")).fetchall()]
+                if group_cols:
+                    if "chat_type" not in group_cols:
+                        conn.execute(text("ALTER TABLE target_groups ADD COLUMN chat_type VARCHAR(16);"))
             await connection.run_sync(run_sqlite_migrations)

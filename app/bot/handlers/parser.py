@@ -158,16 +158,16 @@ async def execute_parsing(message: Message, state: FSMContext, chat_identifier: 
 async def callback_parse_export(callback: CallbackQuery):
     async with async_session_factory() as session:
         members = (await session.execute(
-            select(AudienceMember).where(AudienceMember.status.in_(["pending", "deferred"]))
+            select(AudienceMember)
         )).scalars().all()
 
     if not members:
-        await safe_edit_text(callback.message, "В базе нет пользователей в статусе ожидания.", reply_markup=back_keyboard("nav_parser"))
+        await safe_edit_text(callback.message, "В базе еще нет собранных пользователей. Сначала запустите сбор аудитории из чата.", reply_markup=back_keyboard("nav_parser"))
         await callback.answer()
         return
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
-    export_path = DATA_DIR / "exports" / f"pending_pool_{timestamp}.txt"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    export_path = DATA_DIR / "exports" / f"audience_{timestamp}.txt"
     export_path.parent.mkdir(parents=True, exist_ok=True)
 
     lines = []
@@ -178,6 +178,13 @@ async def callback_parse_export(callback: CallbackQuery):
             lines.append(str(m.tg_id))
 
     await asyncio.to_thread(export_path.write_text, "\n".join(lines), encoding="utf-8")
-    document_file = FSInputFile(export_path, filename="pending_audience.txt")
-    await callback.message.answer_document(document_file, caption=f"Текущая очередь: {len(members)} чел.")
+    document_file = FSInputFile(export_path, filename=f"audience_{timestamp}.txt")
+    await callback.message.answer_document(
+        document_file,
+        caption=(
+            f"<b>TG-INVITE-MACHINE | Выгрузка базы аудитории</b>\n"
+            f"Всего пользователей: <code>{len(lines)}</code> чел.\n"
+            f"Формат: @username или ID (по одной записи на строку)"
+        )
+    )
     await callback.answer()

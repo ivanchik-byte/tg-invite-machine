@@ -606,6 +606,7 @@ async def test_all_nav_handlers_render_cleanly():
     cb = MagicMock(spec=CallbackQuery)
     cb.message = MagicMock(spec=Message)
     cb.message.edit_text = AsyncMock()
+    cb.message.answer_document = AsyncMock()
     cb.answer = AsyncMock()
 
     await callback_nav_main(cb)
@@ -636,6 +637,12 @@ async def test_all_nav_handlers_render_cleanly():
     cb.message.edit_text.reset_mock()
     await callback_nav_stats(cb)
     cb.message.edit_text.assert_awaited()
+
+    cb.message.edit_text.reset_mock()
+    cb.answer.reset_mock()
+    from app.bot.handlers.parser import callback_parse_export
+    await callback_parse_export(cb)
+    cb.answer.assert_awaited()
 
 
 
