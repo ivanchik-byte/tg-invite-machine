@@ -2,7 +2,7 @@ import asyncio
 import logging
 import random
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Callable, Awaitable, List
+from typing import Optional, Callable, Awaitable, List, Any
 from telethon import TelegramClient
 from telethon.errors import (
     FloodWaitError,
@@ -12,7 +12,11 @@ from telethon.errors import (
     UserNotMutualContactError,
     UserIdInvalidError,
     ChatAdminRequiredError,
-    InviteRequestSentError
+    InviteRequestSentError,
+    UserDeactivatedError,
+    UserDeactivatedBanError,
+    AuthKeyUnregisteredError,
+    SessionRevokedError,
 )
 from telethon.tl.functions.account import UpdateStatusRequest
 from telethon.tl.functions.channels import InviteToChannelRequest
@@ -27,7 +31,7 @@ from app.telegram.client_factory import get_telethon_client
 
 logger = logging.getLogger("tg_invite_machine")
 
-TaskUpdateCallback = Callable[[int, int, int, int, str], Awaitable[None]]
+TaskUpdateCallback = Callable[..., Awaitable[None]]
 
 def calculate_delay(speed_profile: str) -> float:
     base_min = settings.MIN_DELAY_BETWEEN_INVITES
@@ -45,7 +49,7 @@ def calculate_delay(speed_profile: str) -> float:
         return random.uniform(min_pause, max_pause)
     return random.uniform(max_pause, max_pause * 1.5)
 
-async def simulate_pre_invite_reading(client: TelegramClient, target_entity: any, mark_read: bool = True) -> None:
+async def simulate_pre_invite_reading(client: TelegramClient, target_entity: Any, mark_read: bool = True) -> None:
     try:
         await client(UpdateStatusRequest(offline=False))
         message_ids = []
@@ -91,7 +95,7 @@ class InviterOrchestrator:
             await session.execute(
                 update(Account)
                 .where(
-                    (Account.last_invite_at < today_start) | (Account.last_invite_at == None),
+                    (Account.last_invite_at < today_start) | (Account.last_invite_at.is_(None)),
                     Account.daily_invites_count > 0,
                 )
                 .values(daily_invites_count=0)
@@ -172,11 +176,21 @@ class InviterOrchestrator:
                         task.successful_invites,
                         task.total_targets,
                         task.flood_errors,
-                        "Сработала защита (Circuit Breaker). Слишком много флуд-ограничений подряд. Задача приостановлена."
+                        "Сработала защита (Circuit Breaker). Слишком много флуд-ограничений подряд. Задача приостановлена.",
+                        is_final=True
                     )
                 break
 
             async with session_factory() as session:
+                today_start = datetime.combine(now.date(), datetime.min.time())
+                await session.execute(
+                    update(Account)
+                    .where(
+                        (Account.last_invite_at < today_start) | (Account.last_invite_at.is_(None)),
+                        Account.daily_invites_count > 0,
+                    )
+                    .values(daily_invites_count=0)
+                )
                 await session.execute(
                     update(Account)
                     .where(Account.status == "cooldown", Account.cooldown_until <= now)
@@ -189,7 +203,7 @@ class InviterOrchestrator:
                     and_(
                         Account.is_active == True,
                         Account.status == "active",
-                        (Account.cooldown_until == None) | (Account.cooldown_until <= now),
+                        (Account.cooldown_until.is_(None)) | (Account.cooldown_until <= now),
                         Account.daily_invites_count < settings.MAX_INVITES_PER_SESSION_DAILY
                     )
                 ).order_by(Account.last_invite_at.asc().nullsfirst()).limit(1)
@@ -210,14 +224,15 @@ class InviterOrchestrator:
                             task.successful_invites if task else 0,
                             task.total_targets if task else 0,
                             task.flood_errors if task else 0,
-                            "Все доступные аккаунты исчерпали дневной лимит или находятся в отлежке."
+                            "Все доступные аккаунты исчерпали дневной лимит или находятся в отлежке.",
+                            is_final=True
                         )
                     break
 
                 target_query = select(AudienceMember).where(
                     and_(
                         AudienceMember.status == "pending",
-                        (AudienceMember.target_group_id == None) | (AudienceMember.target_group_id == target_group.id)
+                        (AudienceMember.target_group_id.is_(None)) | (AudienceMember.target_group_id == target_group.id)
                     )
                 ).order_by(AudienceMember.id.asc()).limit(1)
 
@@ -237,7 +252,8 @@ class InviterOrchestrator:
                             task.successful_invites if task else 0,
                             task.total_targets if task else 0,
                             task.flood_errors if task else 0,
-                            "Очередь пользователей завершена. Все участники обработаны."
+                            "Очередь пользователей завершена. Все участники обработаны.",
+                            is_final=True
                         )
                     break
 
@@ -255,10 +271,10 @@ class InviterOrchestrator:
                 await client.connect()
                 await simulate_pre_invite_reading(client, target_input, mark_read=mark_read)
 
-                if target_access_hash and target_member.tg_id:
-                    user_to_add = InputPeerUser(target_member.tg_id, target_access_hash)
-                elif target_member.username:
+                if target_member.username:
                     user_to_add = await client.get_entity(target_member.username)
+                elif target_access_hash and target_member.tg_id:
+                    user_to_add = InputPeerUser(target_member.tg_id, target_access_hash)
                 elif target_member.tg_id:
                     user_to_add = await client.get_entity(target_member.tg_id)
                 else:
@@ -282,6 +298,15 @@ class InviterOrchestrator:
             except InviteRequestSentError:
                 error_status = "awaiting_approval"
                 error_reason = "Отправлена заявка на вступление"
+            except (UserDeactivatedError, UserDeactivatedBanError, AuthKeyUnregisteredError, SessionRevokedError) as ban_err:
+                error_status = "account_banned"
+                error_reason = f"Аккаунт заблокирован или сессия отозвана: {ban_err}"
+                async with session_factory() as session:
+                    db_acc = await session.get(Account, account_id)
+                    if db_acc:
+                        db_acc.status = "banned"
+                        db_acc.is_active = False
+                        await session.commit()
             except FloodWaitError as flood:
                 error_status = "flood_wait"
                 error_reason = f"FloodWait {flood.seconds}s"
@@ -328,7 +353,11 @@ class InviterOrchestrator:
                         task.successful_invites += 1
                 else:
                     if db_member:
-                        if error_status in ("flood_wait", "peer_flood"):
+                        if error_status == "account_banned":
+                            # Account was banned; preserve member as pending for next worker
+                            db_member.status = "pending"
+                            db_member.reason = None
+                        elif error_status in ("flood_wait", "peer_flood"):
                             # flood hit: park member out of pending so the next
                             # LIMIT 1 pick doesn't retry the same user
                             db_member.status = "deferred"
@@ -358,7 +387,8 @@ class InviterOrchestrator:
                             task.successful_invites if task else 0,
                             task.total_targets if task else 0,
                             task.flood_errors if task else 0,
-                            "Целевая группа требует прав администратора для добавления участников. Задача приостановлена."
+                            "Целевая группа требует прав администратора для добавления участников. Задача приостановлена.",
+                            is_final=True
                         )
                     break
 
@@ -372,7 +402,8 @@ class InviterOrchestrator:
                         task.successful_invites,
                         task.total_targets,
                         task.flood_errors,
-                        progress_info
+                        progress_info,
+                        is_final=False
                     )
 
             pause_time = calculate_delay(speed_profile)

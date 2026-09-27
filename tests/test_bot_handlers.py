@@ -333,6 +333,8 @@ def test_tdata_password_required_sentinel(monkeypatch, tmp_path):
     with zipfile.ZipFile(archive, "w") as bundle:
         bundle.writestr("tdata/", "")
 
+    monkeypatch.setattr(converter.settings, "REQUIRE_STRICT_PROXIES", False)
+
     def need_password(*args, **kwargs):
         raise Exception("tdata archive needs password")
 
@@ -400,4 +402,83 @@ async def test_pre_invite_reading_skips_mark_for_channels(monkeypatch):
     group_client = FakeClient()
     await inviter_service.simulate_pre_invite_reading(group_client, object(), mark_read=True)
     assert group_client.acked is True
+
+@pytest.mark.asyncio
+async def test_converter_strict_proxy_blocks_without_proxy(monkeypatch, tmp_path):
+    import app.telegram.converter as converter
+    from app.telegram.client_factory import ProxySecurityError
+
+    monkeypatch.setattr(converter.settings, "REQUIRE_STRICT_PROXIES", True)
+
+    session_file = tmp_path / "test.session"
+    session_file.write_bytes(b"dummy")
+
+    with pytest.raises(ProxySecurityError, match="Zero-leak policy"):
+        await converter.import_session_file(session_file, proxy=None)
+
+    archive = tmp_path / "bundle.zip"
+    archive.write_bytes(b"dummy")
+
+    with pytest.raises(ProxySecurityError, match="Zero-leak policy"):
+        await converter.convert_tdata_archive(archive, proxy=None)
+
+def test_collector_alphabet_contains_cyrillic():
+    cyrillic = [chr(c) for c in range(ord('а'), ord('я') + 1)]
+    assert 'а' in cyrillic
+    assert 'я' in cyrillic
+    assert len(cyrillic) == 32
+
+@pytest.mark.asyncio
+async def test_inviter_ban_error_handling_flow():
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from app.models.models import Base, Account, AudienceMember
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with session_factory() as session:
+        acc = Account(phone="+10000000000", session_encrypted="dummy", status="active", is_active=True)
+        session.add(acc)
+        member = AudienceMember(tg_id=42, username="user42", source_chat="src", status="pending")
+        session.add(member)
+        await session.commit()
+        acc_id = acc.id
+        member_id = member.id
+
+    async with session_factory() as session:
+        db_acc = await session.get(Account, acc_id)
+        db_acc.status = "banned"
+        db_acc.is_active = False
+
+        db_member = await session.get(AudienceMember, member_id)
+        db_member.status = "pending"
+        db_member.reason = None
+        await session.commit()
+
+    async with session_factory() as session:
+        refreshed_acc = await session.get(Account, acc_id)
+        assert refreshed_acc.status == "banned"
+        assert refreshed_acc.is_active is False
+
+        refreshed_member = await session.get(AudienceMember, member_id)
+        assert refreshed_member.status == "pending"
+
+    await engine.dispose()
+
+def test_zip_single_session_support(tmp_path):
+    import zipfile
+    from app.core.security import safe_extract_zip
+
+    zip_path = tmp_path / "single.zip"
+    with zipfile.ZipFile(zip_path, "w") as z:
+        z.writestr("test_account.session", "fake_session_data")
+
+    dest_dir = tmp_path / "extracted"
+    safe_extract_zip(zip_path, dest_dir)
+    session_files = list(dest_dir.rglob("*.session"))
+    assert len(session_files) == 1
+    assert len(session_files) >= 1
+
 

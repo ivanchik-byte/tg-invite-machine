@@ -11,11 +11,15 @@ from opentele2.api import CreateNewSession
 
 from app.core.config import settings
 from app.core.security import safe_extract_zip, encrypt_session_string
+from app.telegram.client_factory import ProxySecurityError
 
 # returned as msg when the tdata archive needs a 2fa password
 PASSWORD_REQUIRED = "tdata_password_required"
 
 async def import_session_file(session_path: Path, proxy: Optional[Dict[str, Any]] = None) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    if settings.REQUIRE_STRICT_PROXIES and not proxy:
+        raise ProxySecurityError("Zero-leak policy: Active proxy is required for account import")
+
     session_name = str(session_path.resolve())
     client = TelegramClient(
         session_name,
@@ -50,6 +54,9 @@ async def convert_tdata_archive(
     password: Optional[str] = None,
     proxy: Optional[Dict[str, Any]] = None
 ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    if settings.REQUIRE_STRICT_PROXIES and not proxy:
+        raise ProxySecurityError("Zero-leak policy: Active proxy is required for account import")
+
     temp_dir = Path(tempfile.mkdtemp(prefix="tdata_"))
     try:
         await asyncio.to_thread(safe_extract_zip, zip_path, temp_dir)

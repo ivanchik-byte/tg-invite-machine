@@ -16,7 +16,7 @@ from app.bot.states import AccountState
 from app.bot.keyboards import accounts_menu_keyboard, back_keyboard, accounts_pagination_keyboard
 from app.core.utils import safe_edit_text
 from app.telegram.converter import convert_tdata_archive, import_session_file, PASSWORD_REQUIRED
-from app.telegram.client_factory import get_telethon_client, decrypt_proxy_password
+from app.telegram.client_factory import get_telethon_client, decrypt_proxy_password, build_proxy_dict, ProxySecurityError
 from app.services.spambot_service import check_account_spambot
 from app.services.proxy_service import import_proxies_from_text
 from app.services.export_service import generate_accounts_excel
@@ -86,7 +86,7 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
             try:
                 safe_extract_zip(temp_target, inspect_dir)
                 session_files = list(inspect_dir.rglob("*.session"))[:MAX_SESSION_FILES]
-                if len(session_files) > 1:
+                if len(session_files) >= 1:
                     proxies_file = next(inspect_dir.rglob("*proxy*.txt"), None)
                     added_proxies = 0
                     if proxies_file:
@@ -100,19 +100,20 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                     async with async_session_factory() as session:
                         existing_proxies = (await session.execute(select(Proxy).where(Proxy.is_active == True))).scalars().all()
 
+                        if settings.REQUIRE_STRICT_PROXIES and not existing_proxies:
+                            await state.clear()
+                            await status_msg.edit_text(
+                                "Включена политика Zero-Leak, но в базе нет активных прокси. Добавьте прокси перед импортом архива.",
+                                reply_markup=back_keyboard("nav_accounts")
+                            )
+                            return
+
                         for idx, s_path in enumerate(session_files):
                             chosen_proxy = None
                             proxy_dict = None
                             if existing_proxies:
                                 chosen_proxy = existing_proxies[idx % len(existing_proxies)]
-                                proxy_dict = {
-                                    "proxy_type": chosen_proxy.protocol.lower(),
-                                    "addr": chosen_proxy.host,
-                                    "port": chosen_proxy.port,
-                                    "username": chosen_proxy.username,
-                                    "password": decrypt_proxy_password(chosen_proxy.password),
-                                    "rdns": True
-                                }
+                                proxy_dict = build_proxy_dict(chosen_proxy)
 
                             ok, s_msg, s_info = await import_session_file(s_path, proxy=proxy_dict)
                             if ok and s_info:
@@ -152,7 +153,24 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
             finally:
                 shutil.rmtree(inspect_dir, ignore_errors=True)
 
-            success, msg, info = await convert_tdata_archive(temp_target)
+        async with async_session_factory() as session:
+            single_proxy = (await session.execute(
+                select(Proxy).where(Proxy.is_active == True).order_by(Proxy.id.asc()).limit(1)
+            )).scalars().first()
+
+        if settings.REQUIRE_STRICT_PROXIES and not single_proxy:
+            await state.clear()
+            await status_msg.edit_text(
+                "Включена политика Zero-Leak, но в базе нет активных прокси. Добавьте рабочий прокси перед загрузкой аккаунтов.",
+                reply_markup=back_keyboard("nav_accounts")
+            )
+            return
+
+        single_proxy_dict = build_proxy_dict(single_proxy) if single_proxy else None
+        chosen_proxy_id = single_proxy.id if single_proxy else None
+
+        if filename.lower().endswith(".zip"):
+            success, msg, info = await convert_tdata_archive(temp_target, proxy=single_proxy_dict)
             if not success and msg == PASSWORD_REQUIRED:
                 await state.set_state(AccountState.waiting_for_password)
                 await state.update_data(archive_path=str(temp_target))
@@ -160,7 +178,7 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                 return
 
         elif expected_type == "session" or filename.lower().endswith(".session"):
-            success, msg, info = await import_session_file(temp_target)
+            success, msg, info = await import_session_file(temp_target, proxy=single_proxy_dict)
         else:
             await state.clear()
             await status_msg.edit_text("Неподдерживаемый формат файла. Отправьте .zip архив с tdata или .session файл.")
@@ -183,6 +201,8 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                 existing.username = info.get("username")
                 existing.status = "active"
                 existing.is_active = True
+                if chosen_proxy_id:
+                    existing.proxy_id = chosen_proxy_id
                 await session.commit()
                 response_text = f"Аккаунт {quote_html(info['phone'])} обновлен в базе."
             else:
@@ -193,7 +213,8 @@ async def handle_account_file(message: Message, state: FSMContext, bot: Bot):
                     last_name=info.get("last_name"),
                     username=info.get("username"),
                     status="active",
-                    is_active=True
+                    is_active=True,
+                    proxy_id=chosen_proxy_id
                 )
                 session.add(acc)
                 await session.commit()
@@ -225,7 +246,23 @@ async def handle_account_password(message: Message, state: FSMContext):
         pass
     status_msg = await message.answer("Проверка пароля и конвертация сессии...")
 
-    success, msg, info = await convert_tdata_archive(Path(archive_path), password=password)
+    async with async_session_factory() as session:
+        active_proxy = (await session.execute(
+            select(Proxy).where(Proxy.is_active == True).order_by(Proxy.id.asc()).limit(1)
+        )).scalars().first()
+
+    if settings.REQUIRE_STRICT_PROXIES and not active_proxy:
+        await state.clear()
+        await status_msg.edit_text(
+            "Включена политика Zero-Leak, но в базе нет активных прокси. Добавьте рабочий прокси перед подтверждением пароля.",
+            reply_markup=back_keyboard("nav_accounts")
+        )
+        return
+
+    proxy_dict = build_proxy_dict(active_proxy) if active_proxy else None
+    chosen_proxy_id = active_proxy.id if active_proxy else None
+
+    success, msg, info = await convert_tdata_archive(Path(archive_path), password=password, proxy=proxy_dict)
     if not success or not info:
         attempts = state_data.get("attempts", 0) + 1
         if attempts >= 3:
@@ -253,6 +290,8 @@ async def handle_account_password(message: Message, state: FSMContext):
             if existing:
                 existing.session_encrypted = info["session_encrypted"]
                 existing.status = "active"
+                if chosen_proxy_id:
+                    existing.proxy_id = chosen_proxy_id
                 await session.commit()
                 response_text = f"Аккаунт {quote_html(info['phone'])} успешно обновлен с 2FA паролем."
             else:
@@ -262,7 +301,8 @@ async def handle_account_password(message: Message, state: FSMContext):
                     first_name=info.get("first_name"),
                     last_name=info.get("last_name"),
                     username=info.get("username"),
-                    status="active"
+                    status="active",
+                    proxy_id=chosen_proxy_id
                 )
                 session.add(acc)
                 await session.commit()

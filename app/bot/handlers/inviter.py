@@ -285,10 +285,10 @@ async def _create_and_launch_task(target_group_id: int, target_link: str, chat_t
     chat_id = status_msg.chat.id
     message_id = status_msg.message_id
 
-    async def update_status_ui(task_id: int, invited: int, total: int, floods: int, status_text: str):
+    async def update_status_ui(task_id: int, invited: int, total: int, floods: int, status_text: str, is_final: bool = False):
         global last_ui_update_time
         current_now = time.monotonic()
-        if current_now - last_ui_update_time < 3.0:
+        if not is_final and (current_now - last_ui_update_time < 3.0):
             return
         last_ui_update_time = current_now
 
@@ -303,7 +303,7 @@ async def _create_and_launch_task(target_group_id: int, target_link: str, chat_t
                 chat_id=chat_id,
                 message_id=message_id,
                 text=ui_text,
-                reply_markup=inviter_menu_keyboard(task_running=True)
+                reply_markup=inviter_menu_keyboard(task_running=not is_final)
             )
         except Exception:
             pass

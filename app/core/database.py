@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings
@@ -6,11 +7,20 @@ from app.core.config import settings
 class Base(DeclarativeBase):
     pass
 
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=False,
-    future=True
-)
+engine_kwargs = {"echo": False, "future": True}
+if "sqlite" in settings.DATABASE_URL:
+    engine_kwargs["connect_args"] = {"timeout": 15}
+
+engine = create_async_engine(settings.DATABASE_URL, **engine_kwargs)
+
+if "sqlite" in settings.DATABASE_URL:
+    @event.listens_for(engine.sync_engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA busy_timeout=15000;")
+        cursor.close()
+
 
 async_session_factory = async_sessionmaker(
     bind=engine,

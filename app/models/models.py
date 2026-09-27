@@ -53,7 +53,7 @@ class Account(Base):
     proxy: Mapped[Optional[Proxy]] = relationship("Proxy", back_populates="accounts")
 
     daily_invites_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_invite_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_invite_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     cooldown_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
     flood_incidents: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)

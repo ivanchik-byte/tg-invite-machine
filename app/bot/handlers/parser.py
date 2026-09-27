@@ -139,7 +139,7 @@ async def execute_parsing(message: Message, state: FSMContext, chat_identifier: 
 async def callback_parse_export(callback: CallbackQuery):
     async with async_session_factory() as session:
         members = (await session.execute(
-            select(AudienceMember).where(AudienceMember.status == "pending")
+            select(AudienceMember).where(AudienceMember.status.in_(["pending", "deferred"]))
         )).scalars().all()
 
     if not members:

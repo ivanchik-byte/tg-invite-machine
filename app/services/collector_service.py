@@ -65,7 +65,8 @@ async def collect_chat_members(
             if progress_callback:
                 await progress_callback(0, "Сбор списка участников чата...")
 
-            alphabet = [""] + list(string.ascii_lowercase) + [str(d) for d in range(10)]
+            cyrillic = [chr(c) for c in range(ord('а'), ord('я') + 1)]
+            alphabet = [""] + list(string.ascii_lowercase) + cyrillic + [str(d) for d in range(10)]
             seen_ids: Set[int] = set()
 
             for query_char in alphabet:
