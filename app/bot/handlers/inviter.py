@@ -6,7 +6,7 @@ from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from html import escape as quote_html
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 from telethon.tl.types import Channel, Chat
 from telethon.tl.functions.messages import MigrateChatRequest
@@ -193,6 +193,13 @@ async def callback_invite_start(callback: CallbackQuery, state: FSMContext):
         return
 
     async with async_session_factory() as session:
+        await session.execute(
+            update(Account)
+            .where(Account.is_active == True, Account.status != "banned")
+            .values(status="active", cooldown_until=None)
+        )
+        await session.commit()
+
         accounts_count = (await session.execute(
             select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
         )).scalar_one()
@@ -217,7 +224,22 @@ async def callback_invite_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=back_keyboard("nav_inviter"))
     await callback.answer()
 
+@inviter_router.callback_query(F.data == "invite_reset_limits")
+async def callback_invite_reset_limits(callback: CallbackQuery, state: FSMContext):
+    async with async_session_factory() as session:
+        await session.execute(
+            update(Account).where(Account.is_active == True, Account.status != "banned").values(
+                daily_invites_count=0,
+                cooldown_until=None,
+                status="active"
+            )
+        )
+        await session.commit()
+    await callback.answer("Счетчик инвайтов и отлежка аккаунтов сброшены!", show_alert=True)
+    await callback_nav_inviter(callback, state)
+
 TARGET_TYPE_LABELS = {"channel": "канал", "supergroup": "супергруппа", "basic_group": "группа"}
+
 
 @inviter_router.message(InviterState.waiting_for_target_group, F.text)
 async def handle_target_group(message: Message, state: FSMContext, bot: Bot):

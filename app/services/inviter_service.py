@@ -239,32 +239,39 @@ class InviterOrchestrator:
                     and_(
                         Account.is_active == True,
                         Account.status == "active",
-                        (Account.cooldown_until.is_(None)) | (Account.cooldown_until <= now),
                         Account.daily_invites_count < daily_limit
                     )
                 ).order_by(Account.last_invite_at.asc().nullsfirst()).limit(1)
-
 
                 if not is_sqlite:
                     worker_query = worker_query.with_for_update(skip_locked=True)
 
                 active_account = (await session.execute(worker_query)).scalars().first()
                 if not active_account:
+                    total_active = (await session.execute(
+                        select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
+                    )).scalar_one()
+
                     task = await session.get(InviteTask, self.task_id)
                     if task:
                         task.status = "completed"
                         task.finished_at = now
                         await session.commit()
                     if progress_callback:
+                        if total_active > 0:
+                            msg = f"Все активные сессии достигли дневного лимита ({daily_limit} инвайтов)."
+                        else:
+                            msg = "В пуле нет активных аккаунтов для инвайтинга."
                         await progress_callback(
                             self.task_id,
                             task.successful_invites if task else 0,
                             task.total_targets if task else 0,
                             task.flood_errors if task else 0,
-                            "Все доступные аккаунты исчерпали дневной лимит или находятся в отлежке.",
+                            msg,
                             is_final=True
                         )
                     break
+
 
                 target_query = select(AudienceMember).where(
                     AudienceMember.status == "pending"
@@ -395,9 +402,10 @@ class InviterOrchestrator:
                     db_acc = await session.get(Account, account_id)
                     if db_acc:
                         db_acc.status = "cooldown"
-                        db_acc.cooldown_until = now + timedelta(hours=24)
+                        db_acc.cooldown_until = now + timedelta(minutes=5)
                         db_acc.flood_incidents += 1
                         await session.commit()
+
             except ChatAdminRequiredError:
                 error_status = "no_rights"
                 error_reason = "У аккаунта нет прав на добавление участников"

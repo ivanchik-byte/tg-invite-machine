@@ -78,8 +78,12 @@ def inviter_menu_keyboard(task_running: bool = False, is_paused: bool = False, d
         limit_text = f"Дневной лимит ({daily_limit})" if daily_limit else "Дневной лимит"
         builder.row(
             InlineKeyboardButton(text=limit_text, callback_data="invite_daily_limit"),
+            InlineKeyboardButton(text="Сброс лимитов", callback_data="invite_reset_limits")
+        )
+        builder.row(
             InlineKeyboardButton(text="История инвайтов", callback_data="invite_history")
         )
+
     elif is_paused:
         builder.row(
             InlineKeyboardButton(text="Возобновить", callback_data="invite_resume"),
