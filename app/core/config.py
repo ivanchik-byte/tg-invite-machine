@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     TELEGRAM_API_HASH: str = Field(default="", description="MTProto API HASH")
 
     ENCRYPTION_KEY: str = Field(default="", description="Fernet encryption key for sessions")
-    REQUIRE_STRICT_PROXIES: bool = Field(default=True, description="Strict fail-fast proxy check to prevent IP leaks")
+    REQUIRE_STRICT_PROXIES: bool = Field(default=False, description="Strict fail-fast proxy check to prevent IP leaks")
     DATABASE_URL: str = Field(
         default=f"sqlite+aiosqlite:///{DATA_DIR / 'inviter.db'}",
         description="Async database connection string"
