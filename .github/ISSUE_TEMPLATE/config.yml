@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Direct Contact (Telegram)
+    url: https://t.me/ivanchikbyte
+    about: Report bugs, crashes, or questions directly to the maintainer in Telegram PM.
+  - name: Telegram Channel
+    url: https://t.me/ivanchik_byte
+    about: Project announcements, releases, and development news.
+  - name: Security Vulnerabilities
+    url: https://github.com/ivanchik-byte/tg-invite-machine/security/policy
+    about: Report security vulnerabilities privately following our security policy.
