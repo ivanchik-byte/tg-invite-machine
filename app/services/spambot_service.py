@@ -1,6 +1,6 @@
 import asyncio
 from typing import Tuple
-from telethon import TelegramClient
+from telethon import TelegramClient, errors
 from app.models.models import Account
 from app.telegram.client_factory import get_telethon_client
 
@@ -19,7 +19,8 @@ LIMITED_PHRASES = (
     "limitations",
     "sending too many messages",
     "temporary limitation",
-    "limited"
+    "limited for",
+    "account is limited",
 )
 
 def classify_spambot_reply(reply_text: str) -> Tuple[str, str]:
@@ -50,6 +51,10 @@ async def check_account_spambot(account: Account) -> Tuple[str, str]:
             return status, description
     except asyncio.TimeoutError:
         return "unknown", "Таймаут ответа @SpamBot"
+    except errors.FloodWaitError as flood:
+        return "unknown", f"Лимит Telegram, повторите через {flood.seconds} сек"
+    except (errors.AuthKeyDuplicatedError, errors.AuthKeyUnregisteredError):
+        return "error", "Сессия используется в другом месте или отозвана"
     except Exception as exc:
         return "error", str(exc)
     finally:

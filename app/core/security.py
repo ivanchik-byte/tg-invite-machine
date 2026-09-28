@@ -25,12 +25,15 @@ def decrypt_session_string(encrypted_token: str) -> str:
     except InvalidToken:
         raise ValueError("Failed to decrypt session: invalid or corrupted encryption key")
 
-def safe_extract_zip(archive_path: Path, destination_dir: Path, max_uncompressed_bytes: int = 150 * 1024 * 1024) -> None:
+def safe_extract_zip(archive_path: Path, destination_dir: Path, max_uncompressed_bytes: int = 150 * 1024 * 1024, max_files: int = 2000) -> None:
     destination_real = destination_dir.resolve()
     total_written = 0
 
     with zipfile.ZipFile(archive_path, "r") as archive:
-        for entry in archive.infolist():
+        entries = archive.infolist()
+        if len(entries) > max_files:
+            raise zipfile.BadZipFile("Archive contains too many files")
+        for entry in entries:
             if (entry.external_attr >> 16) & 0o120000 == 0o120000:
                 raise zipfile.BadZipFile("Archive contains symlinks which are forbidden")
 

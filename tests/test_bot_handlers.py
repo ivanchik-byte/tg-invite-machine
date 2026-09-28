@@ -139,7 +139,8 @@ def test_proxy_password_encryption_and_decryption():
     assert encrypted_pwd != raw_password
 
     assert decrypt_proxy_password(encrypted_pwd) == raw_password
-    assert decrypt_proxy_password("plaintext_fallback") == "plaintext_fallback"
+    with pytest.raises(ValueError):
+        decrypt_proxy_password("plaintext_fallback")
     assert decrypt_proxy_password(None) is None
 
     proxy = Proxy(
@@ -156,10 +157,11 @@ def test_proxy_password_encryption_and_decryption():
     assert proxy_dict["proxy_type"] == "socks5"
 
 def test_proxy_protocol_whitelist_fallback():
-    from app.telegram.client_factory import build_proxy_dict
+    from app.telegram.client_factory import build_proxy_dict, ProxySecurityError
 
     proxy_bad = Proxy(host="10.0.0.1", port=1080, protocol="invalid_proto", is_active=True)
-    assert build_proxy_dict(proxy_bad)["proxy_type"] == "socks5"
+    with pytest.raises(ProxySecurityError):
+        build_proxy_dict(proxy_bad)
 
     proxy_none = Proxy(host="10.0.0.1", port=1080, protocol=None, is_active=True)
     assert build_proxy_dict(proxy_none)["proxy_type"] == "socks5"
@@ -298,11 +300,13 @@ async def test_invite_stop_finalizes_task_in_db(monkeypatch):
             nonlocal stopped
             stopped = True
 
+    from app.services.task_manager import invite_task_manager
+    orch = FakeOrchestrator()
     done = asyncio.get_running_loop().create_future()
     done.set_result(None)
-    monkeypatch.setattr(inviter_handler, "active_orchestrator", FakeOrchestrator())
-    monkeypatch.setattr(inviter_handler, "active_task_handle", done)
-    monkeypatch.setattr(inviter_handler, "active_task_id", task_id)
+    monkeypatch.setattr(invite_task_manager, "active_orchestrator", orch)
+    monkeypatch.setattr(invite_task_manager, "active_task_handle", done)
+    monkeypatch.setattr(invite_task_manager, "active_task_id", task_id)
 
     callback = MagicMock()
     callback.message = MagicMock()
@@ -312,8 +316,8 @@ async def test_invite_stop_finalizes_task_in_db(monkeypatch):
     await inviter_handler.callback_invite_stop(callback)
 
     assert stopped
-    assert inviter_handler.active_orchestrator is None
-    assert inviter_handler.active_task_id is None
+    assert invite_task_manager.active_orchestrator is None
+    assert invite_task_manager.active_task_id is None
 
     async with session_factory() as session:
         stored = await session.get(InviteTask, task_id)
@@ -335,8 +339,11 @@ def test_tdata_password_required_sentinel(monkeypatch, tmp_path):
 
     monkeypatch.setattr(converter.settings, "REQUIRE_STRICT_PROXIES", False)
 
+    class NoPasswordProvided(Exception):
+        pass
+
     def need_password(*args, **kwargs):
-        raise Exception("tdata archive needs password")
+        raise NoPasswordProvided("tdata archive needs password")
 
     monkeypatch.setattr(converter, "TDesktop", need_password)
     monkeypatch.setattr(converter, "safe_extract_zip",

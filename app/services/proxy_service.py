@@ -4,11 +4,11 @@ import socket
 from datetime import datetime, timezone
 from typing import List, Tuple, Optional
 from urllib.parse import urlparse, unquote
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Proxy
-from app.core.security import encrypt_session_string
+from app.core.security import encrypt_session_string, decrypt_session_string
 
 ALLOWED_PROXY_PROTOCOLS = ("socks5", "socks4", "http")
 HOST_PATTERN = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -50,7 +50,7 @@ def parse_proxy_line(raw_line: str) -> Optional[Tuple[str, int, Optional[str], O
             return None
         return host, port, username, password, protocol
 
-    parts = line.split(":")
+    parts = line.rsplit(":", 3)
     try:
         if len(parts) == 2:
             port = int(parts[1])
@@ -62,6 +62,20 @@ def parse_proxy_line(raw_line: str) -> Optional[Tuple[str, int, Optional[str], O
                 return parts[0], port, parts[2], parts[3], protocol
     except ValueError:
         return None
+
+    if line.startswith("[") and "]:" in line:
+        try:
+            host_end = line.index("]:")
+            host = line[1:host_end]
+            rest = line[host_end + 2:].split(":")
+            if len(rest) in (1, 3) and _valid_host(host):
+                port = int(rest[0])
+                if 1 <= port <= 65535:
+                    if len(rest) == 1:
+                        return host, port, None, None, protocol
+                    return host, port, rest[1], rest[2], protocol
+        except ValueError:
+            return None
 
     return None
 
@@ -78,16 +92,21 @@ async def check_proxy_reachability(
     def _test() -> Tuple[bool, Optional[str]]:
         import socks
         s = socks.socksocket()
-        proto = (protocol or "socks5").lower()
-        ptype = socks.SOCKS5 if proto == "socks5" else (socks.SOCKS4 if proto == "socks4" else socks.HTTP)
-        s.set_proxy(ptype, host, port, username=username, password=password)
-        s.settimeout(timeout_seconds)
         try:
-            s.connect(("149.154.175.54", 443))
-            s.close()
-            return True, None
-        except Exception as exc:
-            return False, str(exc)
+            proto = (protocol or "socks5").lower()
+            ptype = socks.SOCKS5 if proto == "socks5" else (socks.SOCKS4 if proto == "socks4" else socks.HTTP)
+            s.set_proxy(ptype, host, port, username=username, password=password)
+            s.settimeout(timeout_seconds)
+            try:
+                s.connect(("149.154.175.54", 443))
+                return True, None
+            except Exception as exc:
+                return False, str(exc)
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
 
     try:
         return await asyncio.wait_for(
@@ -130,36 +149,52 @@ async def import_proxies_from_text(session: AsyncSession, raw_text: str) -> Tupl
     added_count = 0
     skipped_count = 0
 
-    lines = raw_text.strip().splitlines()
-    for raw_line in lines:
+    parsed_lines = []
+    for raw_line in raw_text.strip().splitlines():
         parsed = parse_proxy_line(raw_line)
         if not parsed:
             skipped_count += 1
             continue
+        parsed_lines.append(parsed)
 
-        host, port, username, password, protocol = parsed
-        existing = await session.execute(
-            select(Proxy).where(
-                Proxy.host == host,
-                Proxy.port == port,
-                Proxy.protocol == protocol,
-                Proxy.username == username
-            )
-        )
-        if existing.scalars().first():
-            skipped_count += 1
+    if not parsed_lines:
+        return added_count, skipped_count
+
+    pairs = [(host, port) for host, port, _, _, _ in parsed_lines]
+    pair_filter = or_(*[and_(Proxy.host == h, Proxy.port == p) for h, p in pairs])
+    existing_rows = (await session.execute(
+        select(Proxy).where(pair_filter)
+    )).scalars().all()
+    existing_by_endpoint = {(p.host, p.port, p.protocol, p.username): p for p in existing_rows}
+
+    for host, port, username, password, protocol in parsed_lines:
+        key = (host, port, protocol, username)
+        known = existing_by_endpoint.get(key)
+        if known:
+            stored_password = None
+            if known.password:
+                try:
+                    stored_password = decrypt_session_string(known.password)
+                except ValueError:
+                    stored_password = None
+            password_changed = (password or None) != stored_password
+            if password_changed or known.is_active is False:
+                known.password = encrypt_session_string(password) if password else None
+                known.is_active = True
+                added_count += 1
+            else:
+                skipped_count += 1
             continue
 
-        encrypted_pwd = encrypt_session_string(password) if password else None
-        proxy = Proxy(
+        session.add(Proxy(
             host=host,
             port=port,
             username=username,
-            password=encrypted_pwd,
+            password=encrypt_session_string(password) if password else None,
             protocol=protocol,
             is_active=True
-        )
-        session.add(proxy)
+        ))
+        existing_by_endpoint[key] = True
         added_count += 1
 
     await session.commit()

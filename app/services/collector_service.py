@@ -11,7 +11,7 @@ from telethon.tl.types import (
 )
 from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -112,8 +112,14 @@ async def collect_chat_members(
 
                         if len(collected_users) > 10000:
                             break
-                    except errors.FloodWaitError:
-                        break
+                    except errors.FloodWaitError as flood:
+                        if progress_callback:
+                            await progress_callback(
+                                len(collected_users),
+                                f"Сбор прерван лимитом Telegram, подождите {flood.seconds} сек...",
+                                None,
+                            )
+                        raise
             except errors.ChatAdminRequiredError:
                 if not collected_users:
                     raise RuntimeError(

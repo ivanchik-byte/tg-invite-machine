@@ -62,7 +62,7 @@ async def import_session_file(
     except SessionPasswordNeededError:
         return False, PASSWORD_REQUIRED, None
     except Exception as exc:
-        if "password" in str(exc).lower():
+        if type(exc).__name__ in ("SessionPasswordNeededError", "NoPasswordProvided"):
             return False, PASSWORD_REQUIRED, None
         return False, f"Ошибка чтения сессии: {exc}", None
     finally:
@@ -117,9 +117,6 @@ async def convert_tdata_archive(
             session_string = StringSession.save(telethon_client.session)
             encrypted_token = encrypt_session_string(session_string)
 
-            api_id = getattr(telethon_client, "api_id", None) or 2040
-            api_hash = getattr(telethon_client, "api_hash", None) or "b18441a1ff607e10a989891a5462e627"
-
             account_info = {
                 "phone": getattr(user, "phone", None) or f"+{user.id}",
                 "first_name": getattr(user, "first_name", None),
@@ -127,16 +124,15 @@ async def convert_tdata_archive(
                 "username": getattr(user, "username", None),
                 "session_encrypted": encrypted_token,
                 "two_fa_password": password,
-                "api_id": api_id,
-                "api_hash": api_hash
+                "api_id": settings.TELEGRAM_API_ID,
+                "api_hash": settings.TELEGRAM_API_HASH
             }
             return True, "Успешно", account_info
         finally:
             await telethon_client.disconnect()
     except (Exception, OpenTeleException) as exc:
         exc_name = type(exc).__name__.lower()
-        exc_str = str(exc).lower()
-        if "nopasswordprovided" in exc_name or "sessionpasswordneeded" in exc_name or "password" in exc_str:
+        if "nopasswordprovided" in exc_name or "sessionpasswordneeded" in exc_name:
             return False, PASSWORD_REQUIRED, None
         return False, f"Ошибка конвертации TData: {exc}", None
     finally:

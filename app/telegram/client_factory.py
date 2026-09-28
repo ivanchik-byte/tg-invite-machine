@@ -14,10 +14,7 @@ class ProxySecurityError(Exception):
 def decrypt_proxy_password(password: Optional[str]) -> Optional[str]:
     if not password:
         return None
-    try:
-        return decrypt_session_string(password)
-    except Exception:
-        return password
+    return decrypt_session_string(password)
 
 def build_proxy_dict(proxy: Optional[Proxy]) -> Optional[Dict[str, Any]]:
     if not proxy:
@@ -27,7 +24,7 @@ def build_proxy_dict(proxy: Optional[Proxy]) -> Optional[Dict[str, Any]]:
 
     proto = proxy.protocol.lower() if proxy.protocol else "socks5"
     if proto not in ("socks5", "socks4", "http"):
-        proto = "socks5"
+        raise ProxySecurityError(f"Unsupported proxy protocol: {proxy.protocol}")
 
     proxy_config: Dict[str, Any] = {
         "proxy_type": proto,

@@ -1,3 +1,4 @@
+import asyncio
 import shutil
 import tempfile
 from pathlib import Path
@@ -463,7 +464,7 @@ async def callback_check_all(callback: CallbackQuery):
     banned_count = 0
 
     for idx, acc in enumerate(accounts, 1):
-        client = get_telethon_client(acc)
+        client = get_telethon_client(acc, proxy=acc.proxy)
         try:
             await client.connect()
             if await client.is_user_authorized():
@@ -512,15 +513,11 @@ async def callback_check_spambot(callback: CallbackQuery):
 
     clean_count = 0
     limited_count = 0
+    outcomes: dict[int, str] = {}
 
     for idx, acc in enumerate(accounts, 1):
         status, reason = await check_account_spambot(acc)
-        async with async_session_factory() as session:
-            db_acc = await session.get(Account, acc.id)
-            if db_acc:
-                db_acc.status = status
-                await session.commit()
-
+        outcomes[acc.id] = status
         if status == "active":
             clean_count += 1
         elif status == "spambot":
@@ -528,6 +525,13 @@ async def callback_check_spambot(callback: CallbackQuery):
 
         if idx % 2 == 0 or idx == len(accounts):
             await safe_edit_text(status_msg, f"Проверено через @SpamBot {idx}/{len(accounts)}...\nЧистых: {clean_count}, Со спамблоком: {limited_count}")
+
+    async with async_session_factory() as session:
+        for account_id, status in outcomes.items():
+            db_acc = await session.get(Account, account_id)
+            if db_acc:
+                db_acc.status = status
+        await session.commit()
 
     await safe_edit_text(
         status_msg,
@@ -548,7 +552,7 @@ async def callback_export_excel(callback: CallbackQuery):
         await callback.answer("В базе нет аккаунтов для выгрузки.", show_alert=True)
         return
 
-    excel_file = generate_accounts_excel(accounts)
+    excel_file = await asyncio.to_thread(generate_accounts_excel, accounts)
     await callback.message.answer_document(
         document=excel_file,
         caption=f"Аудиторская выгрузка: {len(accounts)} аккаунтов в формате Excel."

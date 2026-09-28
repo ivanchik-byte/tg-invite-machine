@@ -4,6 +4,9 @@ from app.core.config import settings
 from app.core.database import async_session_factory
 from app.models.models import AppSetting
 
+MAX_DAILY_LIMIT = 500
+VALID_SPEED_PROFILES = {"cautious", "normal", "fast"}
+
 DAILY_LIMIT_KEY = "daily_invite_limit"
 PRIVACY_BLACKLIST_KEY = "privacy_blacklist_enabled"
 
@@ -34,15 +37,15 @@ async def get_daily_invite_limit() -> int:
     if val is not None:
         try:
             parsed = int(val)
-            if parsed > 0:
+            if 0 < parsed <= MAX_DAILY_LIMIT:
                 return parsed
         except ValueError:
             pass
-    return settings.MAX_INVITES_PER_SESSION_DAILY
+    return min(settings.MAX_INVITES_PER_SESSION_DAILY, MAX_DAILY_LIMIT)
 
 async def set_daily_invite_limit(limit: int) -> None:
-    if limit <= 0:
-        raise ValueError("Лимит должен быть положительным числом")
+    if not 0 < limit <= MAX_DAILY_LIMIT:
+        raise ValueError(f"Лимит должен быть от 1 до {MAX_DAILY_LIMIT}")
     await set_app_setting(DAILY_LIMIT_KEY, str(limit))
 
 async def get_privacy_blacklist_enabled() -> bool:
@@ -54,10 +57,11 @@ async def set_privacy_blacklist_enabled(enabled: bool) -> None:
 
 async def get_speed_profile() -> str:
     val = await get_app_setting(SPEED_PROFILE_KEY)
-    if val:
+    if val and (val in VALID_SPEED_PROFILES or val.startswith("custom:")):
         return val
     return settings.DEFAULT_SPEED_PROFILE
 
 async def set_speed_profile(profile: str) -> None:
+    if profile not in VALID_SPEED_PROFILES and not profile.startswith("custom:"):
+        raise ValueError(f"Unknown speed profile: {profile}")
     await set_app_setting(SPEED_PROFILE_KEY, profile)
-    settings.DEFAULT_SPEED_PROFILE = profile

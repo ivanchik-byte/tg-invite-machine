@@ -227,11 +227,11 @@ async def execute_parsing(message: Message, state: FSMContext, chat_identifier: 
 @parser_router.callback_query(F.data == "parse_export")
 async def callback_parse_export(callback: CallbackQuery):
     async with async_session_factory() as session:
-        members = (await session.execute(
-            select(AudienceMember)
-        )).scalars().all()
+        total = (await session.execute(
+            select(func.count(AudienceMember.id))
+        )).scalar_one()
 
-    if not members:
+    if not total:
         await safe_edit_text(
             callback.message,
             "<b>[ВНИМАНИЕ] База аудитории пуста</b>\n\nВ базе еще нет собранных пользователей. Сначала запустите сбор аудитории из чата.",
@@ -244,20 +244,29 @@ async def callback_parse_export(callback: CallbackQuery):
     export_path = DATA_DIR / "exports" / f"audience_{timestamp}.txt"
     export_path.parent.mkdir(parents=True, exist_ok=True)
 
-    lines = []
-    for m in members:
-        if m.username:
-            lines.append(f"@{m.username}")
-        elif m.tg_id:
-            lines.append(str(m.tg_id))
+    written = 0
+    with open(export_path, "w", encoding="utf-8") as out:
+        offset = 0
+        while True:
+            async with async_session_factory() as session:
+                page = (await session.execute(
+                    select(AudienceMember.username, AudienceMember.tg_id)
+                    .order_by(AudienceMember.id.asc())
+                    .offset(offset).limit(1000)
+                )).all()
+            if not page:
+                break
+            for username, tg_id in page:
+                out.write(f"@{username}\n" if username else f"{tg_id}\n")
+                written += 1
+            offset += len(page)
 
-    await asyncio.to_thread(export_path.write_text, "\n".join(lines), encoding="utf-8")
     document_file = FSInputFile(export_path, filename=f"audience_{timestamp}.txt")
     await callback.message.answer_document(
         document_file,
         caption=(
             f"<b>TG-INVITE-MACHINE | Выгрузка базы аудитории</b>\n"
-            f"Всего пользователей: <code>{len(lines)}</code> чел.\n"
+            f"Всего пользователей: <code>{written}</code> чел.\n"
             f"Формат: @username или ID (по одной записи на строку)"
         )
     )

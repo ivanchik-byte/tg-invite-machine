@@ -13,6 +13,7 @@ from telethon.tl.functions.messages import MigrateChatRequest
 
 from app.core.config import settings
 from app.core.database import async_session_factory
+from app.services.account_service import auto_recover_cooldowns
 from app.models.models import Account, AudienceMember, TargetGroup, InviteTask
 from app.core.settings_service import (
     get_daily_invite_limit,
@@ -37,7 +38,6 @@ from app.services.inviter_service import InviterOrchestrator
 from app.services.task_manager import invite_task_manager
 from app.telegram.client_factory import get_telethon_client
 from app.core.utils import normalize_chat_identifier, safe_edit_text
-from app.services.account_service import auto_recover_cooldowns
 from app.services.proxy_service import auto_assign_proxies
 
 inviter_router = Router()
@@ -45,15 +45,10 @@ inviter_router = Router()
 
 VALID_SPEED_PROFILES = {"cautious", "normal", "fast"}
 
-active_orchestrator: InviterOrchestrator | None = None
-active_task_handle: asyncio.Task | None = None
-active_task_id: int | None = None
-last_ui_update_time: float = 0.0
-
 @inviter_router.callback_query(F.data == "nav_inviter")
 async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    is_running = invite_task_manager.is_running() or (active_orchestrator is not None and active_task_handle is not None and not active_task_handle.done())
+    is_running = invite_task_manager.is_running()
 
     async with async_session_factory() as session:
         await auto_recover_cooldowns(session)
@@ -71,7 +66,7 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
         )).scalars().first()
         paused_task_id = paused_task.id if paused_task else None
 
-    orch = active_orchestrator or invite_task_manager.active_orchestrator
+    orch = invite_task_manager.active_orchestrator
     is_paused = getattr(orch, "is_paused", False)
     if is_running and is_paused:
         status_tag = "<code>[ PAUSED ] Инвайтинг на паузе</code>"
@@ -214,10 +209,10 @@ async def handle_custom_daily_limit(message: Message, state: FSMContext):
 
     try:
         limit = int(message.text.strip())
-        if limit <= 0 or limit > 1000:
+        if limit <= 0 or limit > 500:
             raise ValueError
     except ValueError:
-        await message.answer("Пожалуйста, введите положительное число от 1 до 1000 (или /cancel):")
+        await message.answer("Пожалуйста, введите положительное число от 1 до 500 (или /cancel):")
         return
 
     await set_daily_invite_limit(limit)
@@ -231,11 +226,10 @@ async def handle_custom_daily_limit(message: Message, state: FSMContext):
 
 @inviter_router.callback_query(F.data == "invite_start")
 async def callback_invite_start(callback: CallbackQuery, state: FSMContext):
-    global active_orchestrator, active_task_handle
-
-    if active_orchestrator and active_task_handle and not active_task_handle.done():
-        if active_orchestrator.is_paused:
-            active_orchestrator.resume()
+    orch = invite_task_manager.active_orchestrator
+    if invite_task_manager.is_running() and orch:
+        if orch.is_paused:
+            orch.resume()
             await callback.answer("Инвайтинг возобновлен.")
             await callback.message.edit_text("Инвайтинг возобновлен.", reply_markup=inviter_menu_keyboard(task_running=True, is_paused=False))
             return
@@ -243,11 +237,7 @@ async def callback_invite_start(callback: CallbackQuery, state: FSMContext):
         return
 
     async with async_session_factory() as session:
-        await session.execute(
-            update(Account)
-            .where(Account.is_active == True, Account.status != "banned")
-            .values(status="active", cooldown_until=None)
-        )
+        await auto_recover_cooldowns(session)
         await auto_assign_proxies(session)
         await session.commit()
 
@@ -653,7 +643,10 @@ async def handle_custom_delay(message: Message, state: FSMContext):
         )
         return
 
-    custom_profile = f"custom:{int(min_pause)}:{int(max_pause)}"
+    def fmt(v: float) -> str:
+        return str(int(v)) if float(v).is_integer() else str(v)
+
+    custom_profile = f"custom:{fmt(min_pause)}:{fmt(max_pause)}"
     data = await state.get_data()
     source = data.get("source", "task_config")
 
@@ -669,7 +662,7 @@ async def handle_custom_delay(message: Message, state: FSMContext):
         await state.clear()
         await message.answer(
             f"<b>[УСПЕХ] Профиль скорости сохранен</b>\n\n"
-            f"• Установлен интервал: <code>{int(min_pause)}-{int(max_pause)} сек</code>"
+            f"• Установлен интервал: <code>{min_pause}-{max_pause} сек</code>"
             f"{warning_text}",
             reply_markup=back_keyboard("nav_inviter")
         )
@@ -729,8 +722,6 @@ async def _create_and_launch_task(
     bot: Bot,
     status_msg: Message
 ):
-    global active_orchestrator, active_task_handle, active_task_id, last_ui_update_time
-
     type_label = TARGET_TYPE_LABELS.get(chat_type, "чат")
     await status_msg.edit_text("Инициализация целевой группы и запуск инвайт-задачи...")
 
@@ -748,10 +739,10 @@ async def _create_and_launch_task(
         )
         session.add(task)
         await session.commit()
-        active_task_id = task.id
+        launched_task_id = task.id
 
     await state.clear()
-    active_orchestrator = InviterOrchestrator(task_id=active_task_id)
+    orchestrator = InviterOrchestrator(task_id=launched_task_id)
 
     chat_id = status_msg.chat.id
     message_id = status_msg.message_id
@@ -792,10 +783,10 @@ async def _create_and_launch_task(
         except Exception:
             pass
 
-    active_task_handle = invite_task_manager.start(
-        task_id=active_task_id,
-        orchestrator=active_orchestrator,
-        coro=active_orchestrator.run(
+    invite_task_manager.start(
+        task_id=launched_task_id,
+        orchestrator=orchestrator,
+        coro=orchestrator.run(
             session_factory=async_session_factory,
             progress_callback=update_status_ui
         )
@@ -806,7 +797,7 @@ async def _create_and_launch_task(
     await status_msg.edit_text(
         "<b>TG-INVITE-MACHINE | Запуск кампании</b>\n"
         "────────────────────────\n"
-        f"<b>Статус:</b> <code>[ RUNNING ] Задача #{active_task_id} активна</code>\n\n"
+        f"<b>Статус:</b> <code>[ RUNNING ] Задача #{launched_task_id} активна</code>\n\n"
         f"• <b>Целевой объект:</b> <code>{quote_html(target_link)}</code> ({type_label})\n"
         f"• <b>Установленный лимит:</b> <code>{limit_desc}</code>\n"
         f"• <b>Профиль задержки:</b> <code>{speed_desc}</code>\n\n"
@@ -816,8 +807,7 @@ async def _create_and_launch_task(
 
 @inviter_router.callback_query(F.data == "invite_pause")
 async def callback_invite_pause(callback: CallbackQuery):
-    global active_orchestrator
-    orch = active_orchestrator or invite_task_manager.active_orchestrator
+    orch = invite_task_manager.active_orchestrator
     if orch:
         orch.pause()
         await callback.answer("Инвайтинг поставлен на паузу.")
@@ -830,8 +820,7 @@ async def callback_invite_pause(callback: CallbackQuery):
 
 @inviter_router.callback_query(F.data == "invite_resume")
 async def callback_invite_resume(callback: CallbackQuery):
-    global active_orchestrator
-    orch = active_orchestrator or invite_task_manager.active_orchestrator
+    orch = invite_task_manager.active_orchestrator
     if orch:
         orch.resume()
         await callback.answer("Инвайтинг возобновлен.")
@@ -844,7 +833,6 @@ async def callback_invite_resume(callback: CallbackQuery):
 
 @inviter_router.callback_query(F.data.startswith("invite_resume_paused_"))
 async def callback_invite_resume_paused(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    global active_orchestrator, active_task_handle, active_task_id
     raw_id = callback.data.replace("invite_resume_paused_", "")
     try:
         task_id = int(raw_id)
@@ -866,11 +854,7 @@ async def callback_invite_resume_paused(callback: CallbackQuery, state: FSMConte
             await callback.answer("Целевая группа не найдена.", show_alert=True)
             return
 
-        await session.execute(
-            update(Account)
-            .where(Account.is_active == True, Account.status != "banned")
-            .values(status="active", cooldown_until=None)
-        )
+        await auto_recover_cooldowns(session)
         await auto_assign_proxies(session)
         task.status = "running"
         await session.commit()
@@ -881,8 +865,7 @@ async def callback_invite_resume_paused(callback: CallbackQuery, state: FSMConte
 
     await state.clear()
     status_msg = callback.message
-    active_task_id = task_id
-    active_orchestrator = InviterOrchestrator(task_id=active_task_id)
+    resumed_orchestrator = InviterOrchestrator(task_id=task_id)
 
     chat_id = status_msg.chat.id
     message_id = status_msg.message_id
@@ -923,10 +906,10 @@ async def callback_invite_resume_paused(callback: CallbackQuery, state: FSMConte
         except Exception:
             pass
 
-    active_task_handle = invite_task_manager.start(
-        task_id=active_task_id,
-        orchestrator=active_orchestrator,
-        coro=active_orchestrator.run(
+    invite_task_manager.start(
+        task_id=task_id,
+        orchestrator=resumed_orchestrator,
+        coro=resumed_orchestrator.run(
             session_factory=async_session_factory,
             progress_callback=update_status_ui
         )
@@ -938,7 +921,7 @@ async def callback_invite_resume_paused(callback: CallbackQuery, state: FSMConte
     await status_msg.edit_text(
         "<b>TG-INVITE-MACHINE | Возобновление кампании</b>\n"
         "────────────────────────\n"
-        f"<b>Статус:</b> <code>[ RUNNING ] Задача #{active_task_id} возобновлена</code>\n\n"
+        f"<b>Статус:</b> <code>[ RUNNING ] Задача #{task_id} возобновлена</code>\n\n"
         f"• <b>Целевой объект:</b> <code>{quote_html(target_link)}</code> ({type_label})\n"
         f"• <b>Установленный лимит:</b> <code>{limit_desc}</code>\n"
         f"• <b>Профиль задержки:</b> <code>{speed_desc}</code>\n\n"
@@ -949,18 +932,10 @@ async def callback_invite_resume_paused(callback: CallbackQuery, state: FSMConte
 
 @inviter_router.callback_query(F.data == "invite_stop")
 async def callback_invite_stop(callback: CallbackQuery):
-    global active_orchestrator, active_task_handle, active_task_id
-    orch = active_orchestrator or invite_task_manager.active_orchestrator
-    handle = active_task_handle or invite_task_manager.active_task_handle
-    stopped_id = active_task_id or invite_task_manager.active_task_id
+    orch = invite_task_manager.active_orchestrator
+    stopped_id = invite_task_manager.active_task_id
 
     if orch:
-        orch.stop()
-        if handle and not handle.done():
-            handle.cancel()
-        active_orchestrator = None
-        active_task_handle = None
-        active_task_id = None
         invite_task_manager.stop()
         if stopped_id is not None:
             try:

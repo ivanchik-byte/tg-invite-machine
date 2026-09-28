@@ -1,3 +1,4 @@
+import asyncio
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -81,47 +82,64 @@ async def handle_proxy_input(message: Message, state: FSMContext):
 
 @proxies_router.callback_query(F.data == "proxy_check")
 async def callback_proxy_check(callback: CallbackQuery):
-    status_msg = await callback.message.edit_text("Проверка доступности всех прокси по TCP...")
+    await safe_edit_text(callback.message, "Проверка доступности всех прокси по TCP...")
 
     async with async_session_factory() as session:
-        proxies = (await session.execute(select(Proxy))).scalars().all()
+        stored = (await session.execute(select(Proxy))).scalars().all()
+        entries = [
+            (p.id, p.host, p.port, p.protocol, p.username, p.password)
+            for p in stored
+        ]
 
-    if not proxies:
+    if not entries:
         await safe_edit_text(
-            status_msg,
+            callback.message,
             "<b>[ВНИМАНИЕ] Список прокси пуст</b>\n\nДобавьте прокси через меню.",
             reply_markup=back_keyboard("nav_proxies")
         )
         await callback.answer()
         return
 
+    semaphore = asyncio.Semaphore(10)
+
+    async def probe(entry):
+        proxy_id, host, port, protocol, username, password_enc = entry
+        try:
+            pwd = decrypt_proxy_password(password_enc) if password_enc else None
+        except ValueError as exc:
+            return proxy_id, False, f"proxy password decrypt failed: {exc}"
+        async with semaphore:
+            return proxy_id, *await check_proxy_reachability(
+                host=host,
+                port=port,
+                protocol=protocol,
+                username=username,
+                password=pwd,
+                timeout_seconds=7.0
+            )
+
     working = 0
     failed = 0
-
-    for idx, proxy in enumerate(proxies, 1):
-        pwd = decrypt_proxy_password(proxy.password) if proxy.password else None
-        is_ok, err = await check_proxy_reachability(
-            host=proxy.host,
-            port=proxy.port,
-            protocol=proxy.protocol,
-            username=proxy.username,
-            password=pwd,
-            timeout_seconds=7.0
-        )
-        async with async_session_factory() as session:
-            db_proxy = await session.get(Proxy, proxy.id)
-            if db_proxy:
-                db_proxy.is_active = is_ok
-                db_proxy.last_error = err
-                await session.commit()
-
+    outcomes = []
+    checked = 0
+    for coro in asyncio.as_completed([probe(e) for e in entries]):
+        proxy_id, is_ok, err = await coro
+        outcomes.append((proxy_id, is_ok, err))
+        checked += 1
         if is_ok:
             working += 1
         else:
             failed += 1
+        if checked % 5 == 0 or checked == len(entries):
+            await safe_edit_text(callback.message, f"Проверено {checked}/{len(entries)} прокси...\nДоступно: {working}, Недоступно: {failed}")
 
-        if idx % 5 == 0 or idx == len(proxies):
-            await safe_edit_text(status_msg, f"Проверено {idx}/{len(proxies)} прокси...\nДоступно: {working}, Недоступно: {failed}")
+    async with async_session_factory() as session:
+        for proxy_id, is_ok, err in outcomes:
+            db_proxy = await session.get(Proxy, proxy_id)
+            if db_proxy:
+                db_proxy.is_active = is_ok
+                db_proxy.last_error = err
+        await session.commit()
 
     status_tag = "[УСПЕХ]" if failed == 0 and working > 0 else ("[ОШИБКА]" if working == 0 else "[ИТОГ]")
     text = (
@@ -129,7 +147,7 @@ async def callback_proxy_check(callback: CallbackQuery):
         f"• Доступных (активны): <code>{working}</code>\n"
         f"• Недоступных (ошибки): <code>{failed}</code>"
     )
-    await safe_edit_text(status_msg, text, reply_markup=back_keyboard("nav_proxies"))
+    await safe_edit_text(callback.message, text, reply_markup=back_keyboard("nav_proxies"))
     await callback.answer()
 
 @proxies_router.callback_query(F.data == "proxy_auto_bind")

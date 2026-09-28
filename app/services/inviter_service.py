@@ -17,6 +17,7 @@ from telethon.errors import (
     UserDeactivatedError,
     UserDeactivatedBanError,
     AuthKeyUnregisteredError,
+    AuthKeyDuplicatedError,
     SessionRevokedError,
 )
 from telethon.tl.functions.account import UpdateStatusRequest
@@ -182,11 +183,11 @@ class InviterOrchestrator:
                     try:
                         await sync_client.connect()
                         existing_uids = set()
-                        iter_or_coro = sync_client.iter_participants(target_input, limit=10000)
-                        if asyncio.iscoroutine(iter_or_coro):
-                            iter_or_coro.close()
-                        elif hasattr(iter_or_coro, "__aiter__"):
-                            async for participant in iter_or_coro:
+                        participants = sync_client.iter_participants(target_input, limit=10000)
+                        if asyncio.iscoroutine(participants):
+                            participants = await participants
+                        if hasattr(participants, "__aiter__"):
+                            async for participant in participants:
                                 if participant and getattr(participant, "id", None):
                                     existing_uids.add(participant.id)
 
@@ -247,7 +248,7 @@ class InviterOrchestrator:
                     logger.warning("Error updating blacklist members: %s", bl_err)
 
         circuit_breaker_floods = 0
-        circuit_breaker_window_start = datetime.now(timezone.utc)
+        circuit_breaker_window_start = datetime.now(timezone.utc).replace(tzinfo=None)
 
         while not self._stop_event.is_set():
             await self._pause_event.wait()
@@ -255,9 +256,9 @@ class InviterOrchestrator:
                 break
 
             now = datetime.now(timezone.utc).replace(tzinfo=None)
-            if (datetime.now(timezone.utc) - circuit_breaker_window_start).total_seconds() > 1800:
+            if (now - circuit_breaker_window_start).total_seconds() > 1800:
                 circuit_breaker_floods = 0
-                circuit_breaker_window_start = datetime.now(timezone.utc)
+                circuit_breaker_window_start = now
 
             if circuit_breaker_floods >= settings.CIRCUIT_BREAKER_FLOOD_THRESHOLD:
                 async with session_factory() as session:
@@ -413,7 +414,7 @@ class InviterOrchestrator:
                         )
                     )
 
-                target_query = select(AudienceMember).where(and_(*conditions)).order_by(func.random()).limit(1)
+                target_query = select(AudienceMember).where(and_(*conditions)).order_by(AudienceMember.id.asc()).limit(1)
 
                 if not is_sqlite:
                     target_query = target_query.with_for_update(skip_locked=True)
@@ -439,7 +440,11 @@ class InviterOrchestrator:
                 account_id = active_account.id
                 member_id = target_member.id
                 target_access_hash = target_member.access_hash
+                target_tg_id = target_member.tg_id
+                target_username = target_member.username
+                target_first_name = target_member.first_name
                 assigned_proxy = active_account.proxy
+                target_group_id = target_group.id if hasattr(target_group, "id") else task.target_group_id
 
             client: TelegramClient = get_telethon_client(active_account, proxy=assigned_proxy)
             invite_success = False
@@ -461,12 +466,12 @@ class InviterOrchestrator:
                 if not skip_reading:
                     await simulate_pre_invite_reading(client, target_input, mark_read=mark_read)
 
-                if target_member.username:
-                    user_to_add = await client.get_entity(target_member.username)
-                elif target_access_hash and target_member.tg_id:
-                    user_to_add = InputPeerUser(target_member.tg_id, target_access_hash)
-                elif target_member.tg_id:
-                    user_to_add = await client.get_entity(target_member.tg_id)
+                if target_username:
+                    user_to_add = await client.get_entity(target_username)
+                elif target_access_hash and target_tg_id:
+                    user_to_add = InputPeerUser(target_tg_id, target_access_hash)
+                elif target_tg_id:
+                    user_to_add = await client.get_entity(target_tg_id)
                 else:
                     raise ValueError("Пользователь не найден")
 
@@ -486,7 +491,7 @@ class InviterOrchestrator:
                     elif hasattr(res, "users") and isinstance(res.users, list):
                         added_uids.update(u.id for u in res.users if hasattr(u, "id"))
 
-                    target_uid = target_member.tg_id
+                    target_uid = target_tg_id
                     if not target_uid:
                         for attr in ("id", "user_id"):
                             val = getattr(user_to_add, attr, None)
@@ -555,6 +560,17 @@ class InviterOrchestrator:
                         db_acc.flood_incidents += 1
                         await session.commit()
 
+            except AuthKeyDuplicatedError as dup:
+                error_status = "flood_wait"
+                error_reason = f"Сессия занята в другом месте: {dup}"
+                circuit_breaker_floods += 1
+                async with session_factory() as session:
+                    db_acc = await session.get(Account, account_id)
+                    if db_acc:
+                        db_acc.status = "cooldown"
+                        db_acc.cooldown_until = now + timedelta(minutes=settings.PEER_FLOOD_COOLDOWN_MINUTES)
+                        db_acc.flood_incidents += 1
+                        await session.commit()
             except ChatAdminRequiredError:
                 error_status = "no_rights"
                 error_reason = "У аккаунта нет прав на добавление участников"
@@ -570,9 +586,10 @@ class InviterOrchestrator:
                 db_account = await session.get(Account, account_id)
 
                 if invite_success:
+                    circuit_breaker_floods = 0
                     if db_member:
                         db_member.status = "invited"
-                        db_member.target_group_id = target_group.id
+                        db_member.target_group_id = target_group_id
                         db_member.invited_by_account_id = account_id
                         if db_member.tg_id:
                             hist = (await session.execute(
@@ -621,7 +638,7 @@ class InviterOrchestrator:
                 try:
                     await session.commit()
                 except asyncio.CancelledError:
-                    await session.commit()
+                    await session.rollback()
                     raise
 
                 if task and task.status == "completed":
@@ -651,8 +668,8 @@ class InviterOrchestrator:
                         )
                     break
 
-                user_tag = f"@{target_member.username}" if target_member.username else (
-                    target_member.first_name or f"id:{target_member.tg_id or member_id}"
+                user_tag = f"@{target_username}" if target_username else (
+                    target_first_name or f"id:{target_tg_id or member_id}"
                 )
                 if invite_success:
                     event_str = f"• <code>{user_tag}</code> - добавлен"

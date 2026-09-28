@@ -35,9 +35,12 @@ class InviteTaskManager:
     def stop(self) -> bool:
         if self.active_orchestrator:
             self.active_orchestrator.stop()
+            handle = self.active_task_handle
             self.active_task_id = None
             self.active_orchestrator = None
             self.active_task_handle = None
+            if handle and not handle.done():
+                handle.cancel()
             return True
         return False
 

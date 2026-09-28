@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     TELEGRAM_API_HASH: str = Field(default="", description="MTProto API HASH")
 
     ENCRYPTION_KEY: str = Field(default="", description="Fernet encryption key for sessions")
-    REQUIRE_STRICT_PROXIES: bool = Field(default=False, description="Strict fail-fast proxy check to prevent IP leaks")
+    REQUIRE_STRICT_PROXIES: bool = Field(default=True, description="Strict fail-fast proxy check to prevent IP leaks")
 
     @property
     def FAIL_FAST_ON_PROXY_ERROR(self) -> bool:
