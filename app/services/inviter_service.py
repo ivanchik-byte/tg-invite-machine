@@ -13,6 +13,9 @@ from telethon.errors import (
     UserChannelsTooMuchError,
     UserIdInvalidError,
     ChatAdminRequiredError,
+    ChatWriteForbiddenError,
+    ChannelInvalidError,
+    ChannelPrivateError,
     InviteRequestSentError,
     UserDeactivatedError,
     UserDeactivatedBanError,
@@ -21,8 +24,9 @@ from telethon.errors import (
     SessionRevokedError,
 )
 from telethon.tl.functions.account import UpdateStatusRequest
-from telethon.tl.functions.channels import InviteToChannelRequest
-from telethon.tl.types import InputUser, InputPeerUser, InputPeerChannel, Channel
+from telethon.tl.functions.channels import InviteToChannelRequest, JoinChannelRequest
+from telethon.tl.functions.messages import AddChatUserRequest
+from telethon.tl.types import InputUser, InputPeerUser, InputPeerChannel, InputPeerChat, Channel, Chat
 from sqlalchemy import select, and_, or_, update, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -249,6 +253,8 @@ class InviterOrchestrator:
 
         circuit_breaker_floods = 0
         circuit_breaker_window_start = datetime.now(timezone.utc).replace(tzinfo=None)
+        task_excluded_workers: set[int] = set()
+        worker_target_cache: dict[int, Any] = {}
 
         while not self._stop_event.is_set():
             await self._pause_event.wait()
@@ -319,8 +325,9 @@ class InviterOrchestrator:
                     Account.status == "active",
                     Account.daily_invites_count < daily_limit,
                 ]
-                if excluded_ids:
-                    worker_conditions.append(~Account.id.in_(excluded_ids))
+                combined_excluded = set(excluded_ids or []) | task_excluded_workers
+                if combined_excluded:
+                    worker_conditions.append(~Account.id.in_(combined_excluded))
                 # order by last_attempt_at so failed targets rotate instead of sticking to one worker
                 worker_query = select(Account).options(selectinload(Account.proxy)).where(
                     and_(*worker_conditions)
@@ -394,7 +401,9 @@ class InviterOrchestrator:
                             task.finished_at = now
                             await session.commit()
                         if progress_callback:
-                            if total_active > 0:
+                            if task_excluded_workers and len(task_excluded_workers) >= total_active:
+                                msg = "Сессии не состоят в целевом чате или не имеют прав для инвайтинга."
+                            elif total_active > 0:
                                 msg = f"Все активные сессии достигли дневного лимита ({daily_limit} инвайтов)."
                             else:
                                 msg = "В пуле нет активных аккаунтов для инвайтинга."
@@ -473,19 +482,53 @@ class InviterOrchestrator:
                             skip_reading = True
                     except (ValueError, IndexError):
                         pass
+                # Resolve target peer specifically for this client/session to ensure valid access_hash
+                worker_target = worker_target_cache.get(account_id)
+                if worker_target is None:
+                    if target_group.username:
+                        try:
+                            worker_target = await client.get_entity(target_group.username)
+                        except Exception as resolve_err:
+                            logger.debug("Failed to resolve target by username for worker %s: %s", active_account.phone, resolve_err)
+                    if worker_target is None and target_group.tg_id:
+                        try:
+                            worker_target = await client.get_entity(target_group.tg_id)
+                        except Exception as resolve_err:
+                            logger.debug("Failed to resolve target by tg_id for worker %s: %s", active_account.phone, resolve_err)
+
+                    if worker_target is None:
+                        worker_target = target_input
+
+                    # Auto-join if channel/supergroup and not yet joined
+                    if isinstance(worker_target, Channel) and getattr(worker_target, "left", False):
+                        try:
+                            await client(JoinChannelRequest(worker_target))
+                            worker_target.left = False
+                        except Exception as join_err:
+                            logger.debug("JoinChannelRequest info for worker %s: %s", active_account.phone, join_err)
+
+                    worker_target_cache[account_id] = worker_target
+
                 if not skip_reading:
-                    await simulate_pre_invite_reading(client, target_input, mark_read=mark_read)
+                    await simulate_pre_invite_reading(client, worker_target, mark_read=mark_read)
 
                 if target_username:
                     user_to_add = await client.get_entity(target_username)
                 elif target_access_hash and target_tg_id:
                     user_to_add = InputPeerUser(target_tg_id, target_access_hash)
                 elif target_tg_id:
-                    user_to_add = await client.get_entity(target_tg_id)
+                    try:
+                        user_to_add = await client.get_entity(target_tg_id)
+                    except Exception:
+                        user_to_add = InputPeerUser(target_tg_id, 0)
                 else:
                     raise ValueError("Пользователь не найден")
 
-                res = await client(InviteToChannelRequest(target_input, [user_to_add]))
+                if isinstance(worker_target, (Chat, InputPeerChat)):
+                    chat_id = getattr(worker_target, "chat_id", None) or getattr(worker_target, "id", None)
+                    res = await client(AddChatUserRequest(chat_id=chat_id, user_id=user_to_add, fwd_limit=0))
+                else:
+                    res = await client(InviteToChannelRequest(worker_target, [user_to_add]))
 
                 if isinstance(res, bool):
                     invite_success = res
@@ -584,6 +627,11 @@ class InviterOrchestrator:
             except ChatAdminRequiredError:
                 error_status = "no_rights"
                 error_reason = "У аккаунта нет прав на добавление участников"
+                task_excluded_workers.add(account_id)
+            except (ChannelInvalidError, ChannelPrivateError, ChatWriteForbiddenError) as chan_err:
+                error_status = "channel_forbidden"
+                error_reason = f"Аккаунт не имеет доступа к чату или не состоит в нем: {chan_err}"
+                task_excluded_workers.add(account_id)
             except Exception as unhandled_error:
                 error_status = "failed"
                 error_reason = str(unhandled_error)
@@ -620,7 +668,7 @@ class InviterOrchestrator:
                             task.finished_at = now
                 else:
                     if db_member:
-                        if error_status in ("account_banned", "flood_wait", "peer_flood", "no_rights"):
+                        if error_status in ("account_banned", "flood_wait", "peer_flood", "no_rights", "channel_forbidden"):
                             # target was never invited due to account-side ban/flood; keep pending for next batch
                             db_member.status = "pending"
                             db_member.reason = None
