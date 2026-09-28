@@ -14,7 +14,12 @@ from telethon.tl.functions.messages import MigrateChatRequest
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.models.models import Account, AudienceMember, TargetGroup, InviteTask
-from app.core.settings_service import get_daily_invite_limit, set_daily_invite_limit
+from app.core.settings_service import (
+    get_daily_invite_limit,
+    set_daily_invite_limit,
+    get_privacy_blacklist_enabled,
+    set_privacy_blacklist_enabled,
+)
 from app.bot.states import InviterState
 from app.bot.keyboards import (
     inviter_menu_keyboard,
@@ -67,7 +72,9 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
         status_tag = "<code>[ IDLE ] Остановлен</code>"
 
     daily_limit = await get_daily_invite_limit()
+    blacklist_enabled = await get_privacy_blacklist_enabled()
     speed_label = settings.DEFAULT_SPEED_PROFILE.replace("custom:", "свой: ") if settings.DEFAULT_SPEED_PROFILE.startswith("custom:") else settings.DEFAULT_SPEED_PROFILE
+    bl_label = "ВКЛ (пропуск закрытых)" if blacklist_enabled else "ВЫКЛ (пробовать всех)"
 
     text = (
         "<b>TG-INVITE-MACHINE | Центр управления инвайтингом</b>\n"
@@ -77,12 +84,43 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
         f"• <b>Пользователей в очереди:</b> <code>{pending_count}</code> чел.\n"
         f"• <b>Готовых сессий:</b> <code>{active_accounts}</code> шт. (в отлежке: <code>{cooldown_accounts}</code>)\n"
         f"• <b>Суточный лимит:</b> <code>{daily_limit}</code> успешно приглашенных на акк\n"
+        f"• <b>Блэклист приватности:</b> <code>{bl_label}</code>\n"
         f"• <b>Профиль скорости:</b> <code>{speed_label}</code>\n"
         f"• <b>Алгоритм пауз:</b> <code>Тримодальное распределение</code>\n\n"
         "<blockquote>При запуске бот проверит статус группы и запустит распределенный цикл с автоматической ротацией сессий при FloodWait.</blockquote>"
     )
-    await safe_edit_text(callback.message, text, reply_markup=inviter_menu_keyboard(task_running=is_running, is_paused=is_paused, daily_limit=daily_limit))
+    await safe_edit_text(
+        callback.message,
+        text,
+        reply_markup=inviter_menu_keyboard(
+            task_running=is_running,
+            is_paused=is_paused,
+            daily_limit=daily_limit,
+            privacy_blacklist=blacklist_enabled,
+        )
+    )
     await callback.answer()
+
+
+@inviter_router.callback_query(F.data == "invite_toggle_blacklist")
+async def callback_invite_toggle_blacklist(callback: CallbackQuery, state: FSMContext):
+    current = await get_privacy_blacklist_enabled()
+    new_val = not current
+    await set_privacy_blacklist_enabled(new_val)
+    if not new_val:
+        async with async_session_factory() as session:
+            await session.execute(
+                update(AudienceMember)
+                .where(
+                    AudienceMember.status == "restricted",
+                    AudienceMember.reason == "Исключен блэклистом приватности"
+                )
+                .values(status="pending", reason=None)
+            )
+            await session.commit()
+    status_str = "включен (пропуск закрытых профилей)" if new_val else "выключен"
+    await callback.answer(f"Блэклист приватности {status_str}")
+    await callback_nav_inviter(callback, state)
 
 
 @inviter_router.callback_query(F.data == "invite_speed")

@@ -146,7 +146,7 @@ class AudienceHistory(Base):
     username: Mapped[Optional[str]] = mapped_column(String(128), index=True, nullable=True)
     first_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     last_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
-    source_chat: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_chat: Mapped[str] = mapped_column(String(255), default="unknown", nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="collected", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now, onupdate=utc_now)

@@ -10,6 +10,7 @@ from telethon.errors import (
     UserPrivacyRestrictedError,
     UserAlreadyParticipantError,
     UserNotMutualContactError,
+    UserChannelsTooMuchError,
     UserIdInvalidError,
     ChatAdminRequiredError,
     InviteRequestSentError,
@@ -21,12 +22,12 @@ from telethon.errors import (
 from telethon.tl.functions.account import UpdateStatusRequest
 from telethon.tl.functions.channels import InviteToChannelRequest
 from telethon.tl.types import InputUser, InputPeerUser, InputPeerChannel, Channel
-from sqlalchemy import select, and_, update, func
+from sqlalchemy import select, and_, or_, update, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.settings_service import get_daily_invite_limit
+from app.core.settings_service import get_daily_invite_limit, get_privacy_blacklist_enabled
 from app.models.models import Account, AudienceMember, TargetGroup, InviteTask, AudienceHistory
 from app.telegram.client_factory import get_telethon_client
 
@@ -168,6 +169,83 @@ class InviterOrchestrator:
                 await session.commit()
                 return
 
+        # Pre-Sync: discover existing members in target group to eliminate UserAlreadyParticipantError
+        async with session_factory() as session:
+            try:
+                sync_acc = (await session.execute(
+                    select(Account).options(selectinload(Account.proxy)).where(
+                        Account.is_active == True, Account.status == "active"
+                    ).limit(1)
+                )).scalars().first()
+                if sync_acc and target_input:
+                    sync_client = get_telethon_client(sync_acc, proxy=sync_acc.proxy)
+                    try:
+                        await sync_client.connect()
+                        existing_uids = set()
+                        iter_or_coro = sync_client.iter_participants(target_input, limit=10000)
+                        if asyncio.iscoroutine(iter_or_coro):
+                            iter_or_coro.close()
+                        elif hasattr(iter_or_coro, "__aiter__"):
+                            async for participant in iter_or_coro:
+                                if participant and getattr(participant, "id", None):
+                                    existing_uids.add(participant.id)
+
+                        if existing_uids:
+                            uids_list = list(existing_uids)
+                            synced_count = 0
+                            for i in range(0, len(uids_list), 500):
+                                chunk = uids_list[i:i + 500]
+                                res = await session.execute(
+                                    update(AudienceMember)
+                                    .where(
+                                        AudienceMember.tg_id.in_(chunk),
+                                        AudienceMember.status == "pending"
+                                    )
+                                    .values(
+                                        status="already_participant",
+                                        reason="Уже состоит в группе (Pre-Sync)"
+                                    )
+                                )
+                                synced_count += res.rowcount
+                            await session.commit()
+                            if synced_count > 0:
+                                logger.info("Pre-sync: %d members marked as already_participant", synced_count)
+                                self.recent_events.insert(0, f"• Pre-Sync: {synced_count} уже в чате")
+                                self.recent_events = self.recent_events[:5]
+                    except Exception as sync_err:
+                        logger.info("Pre-sync participants skipped or restricted: %s", sync_err)
+                    finally:
+                        await sync_client.disconnect()
+            except Exception as exc:
+                logger.warning("Error during target pre-sync: %s", exc)
+
+            # Apply privacy blacklist if enabled
+            blacklist_enabled = await get_privacy_blacklist_enabled()
+            if blacklist_enabled:
+                try:
+                    bl_res = await session.execute(
+                        update(AudienceMember)
+                        .where(
+                            AudienceMember.status == "pending",
+                            AudienceMember.tg_id.in_(
+                                select(AudienceHistory.tg_id).where(
+                                    AudienceHistory.status.in_(["restricted", "channels_too_much", "uninvitable"])
+                                )
+                            )
+                        )
+                        .values(
+                            status="restricted",
+                            reason="Исключен блэклистом приватности"
+                        )
+                    )
+                    if bl_res.rowcount > 0:
+                        logger.info("Blacklist filter: %d members marked as restricted", bl_res.rowcount)
+                        self.recent_events.insert(0, f"• Блэклист: {bl_res.rowcount} закрытых пропущено")
+                        self.recent_events = self.recent_events[:5]
+                    await session.commit()
+                except Exception as bl_err:
+                    logger.warning("Error updating blacklist members: %s", bl_err)
+
         circuit_breaker_floods = 0
         circuit_breaker_window_start = datetime.now(timezone.utc)
 
@@ -273,9 +351,20 @@ class InviterOrchestrator:
                     break
 
 
-                target_query = select(AudienceMember).where(
-                    AudienceMember.status == "pending"
-                ).order_by(func.random()).limit(1)
+                blacklist_enabled = await get_privacy_blacklist_enabled()
+                conditions = [AudienceMember.status == "pending"]
+                if blacklist_enabled:
+                    restricted_subq = select(AudienceHistory.tg_id).where(
+                        AudienceHistory.status.in_(["restricted", "channels_too_much", "uninvitable"])
+                    )
+                    conditions.append(
+                        or_(
+                            AudienceMember.tg_id.is_(None),
+                            AudienceMember.tg_id.not_in(restricted_subq)
+                        )
+                    )
+
+                target_query = select(AudienceMember).where(and_(*conditions)).order_by(func.random()).limit(1)
 
                 if not is_sqlite:
                     target_query = target_query.with_for_update(skip_locked=True)
@@ -369,6 +458,9 @@ class InviterOrchestrator:
             except UserNotMutualContactError:
                 error_status = "restricted"
                 error_reason = "Требуется взаимный контакт"
+            except UserChannelsTooMuchError:
+                error_status = "channels_too_much"
+                error_reason = "Лимит каналов (500/1000)"
             except (UserIdInvalidError, ValueError):
                 error_status = "skipped"
                 error_reason = "Пользователь не найден"
@@ -458,8 +550,16 @@ class InviterOrchestrator:
                                 )).scalars().first()
                                 if hist:
                                     hist.status = db_member.status
+                                else:
+                                    session.add(AudienceHistory(
+                                        tg_id=db_member.tg_id,
+                                        username=db_member.username,
+                                        first_name=db_member.first_name,
+                                        source_chat=getattr(db_member, "source_chat", None) or "unknown",
+                                        status=db_member.status
+                                    ))
                     if task:
-                        if error_status == "restricted":
+                        if error_status in ("restricted", "channels_too_much"):
                             task.restricted_count += 1
                         elif error_status in ("flood_wait", "peer_flood"):
                             task.flood_errors += 1

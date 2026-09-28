@@ -5,6 +5,7 @@ from app.core.database import async_session_factory
 from app.models.models import AppSetting
 
 DAILY_LIMIT_KEY = "daily_invite_limit"
+PRIVACY_BLACKLIST_KEY = "privacy_blacklist_enabled"
 
 async def get_app_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     async with async_session_factory() as session:
@@ -41,3 +42,10 @@ async def set_daily_invite_limit(limit: int) -> None:
     if limit <= 0:
         raise ValueError("Лимит должен быть положительным числом")
     await set_app_setting(DAILY_LIMIT_KEY, str(limit))
+
+async def get_privacy_blacklist_enabled() -> bool:
+    val = await get_app_setting(PRIVACY_BLACKLIST_KEY, default="true")
+    return str(val).lower() in ("true", "1", "yes")
+
+async def set_privacy_blacklist_enabled(enabled: bool) -> None:
+    await set_app_setting(PRIVACY_BLACKLIST_KEY, "true" if enabled else "false")

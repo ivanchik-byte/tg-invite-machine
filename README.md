@@ -5,11 +5,11 @@
 <p align="left">
   <a href="https://t.me/ivanchik_byte"><img src="https://img.shields.io/badge/Telegram-Канал-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Канал"></a>
   <a href="https://t.me/ivanchikbyte"><img src="https://img.shields.io/badge/Telegram-Личка-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Личка"></a>
-  <a href="https://github.com/ivanchik-byte/tg-invite-machine"><img src="https://img.shields.io/badge/Версия-0.1.1-blue?style=for-the-badge" alt="Версия 0.1.1"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/Тесты-60%20passed-success?style=for-the-badge" alt="Тесты"></a>
+  <a href="https://github.com/ivanchik-byte/tg-invite-machine"><img src="https://img.shields.io/badge/Версия-0.1.2-blue?style=for-the-badge" alt="Версия 0.1.2"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/Тесты-64%20passed-success?style=for-the-badge" alt="Тесты"></a>
 </p>
 
-> Статус: версия v0.1.1-stable. Кодовая база покрыта набором из 60 автоматизированных тестов. Вопросы по развертыванию или предложения можно отправлять в личные сообщения или открывать в issues.
+> Статус: версия v0.1.2-stable. Кодовая база покрыта набором из 64 автоматизированных тестов. Вопросы по развертыванию или предложения можно отправлять в личные сообщения или открывать в issues.
 
 
 > [!IMPORTANT]

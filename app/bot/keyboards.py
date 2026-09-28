@@ -68,7 +68,12 @@ def parser_menu_keyboard() -> InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
-def inviter_menu_keyboard(task_running: bool = False, is_paused: bool = False, daily_limit: Optional[int] = None) -> InlineKeyboardMarkup:
+def inviter_menu_keyboard(
+    task_running: bool = False,
+    is_paused: bool = False,
+    daily_limit: Optional[int] = None,
+    privacy_blacklist: bool = True,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if not task_running:
         builder.row(
@@ -79,6 +84,10 @@ def inviter_menu_keyboard(task_running: bool = False, is_paused: bool = False, d
         builder.row(
             InlineKeyboardButton(text=limit_text, callback_data="invite_daily_limit"),
             InlineKeyboardButton(text="Сброс лимитов", callback_data="invite_reset_limits")
+        )
+        bl_text = "Блэклист приватности: [ВКЛ]" if privacy_blacklist else "Блэклист приватности: [ВЫКЛ]"
+        builder.row(
+            InlineKeyboardButton(text=bl_text, callback_data="invite_toggle_blacklist")
         )
         builder.row(
             InlineKeyboardButton(text="История инвайтов", callback_data="invite_history")
