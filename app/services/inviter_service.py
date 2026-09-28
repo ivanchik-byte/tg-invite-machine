@@ -221,7 +221,7 @@ class InviterOrchestrator:
                 logger.warning("Error during target pre-sync: %s", exc)
 
             # Apply privacy blacklist if enabled
-            blacklist_enabled = await get_privacy_blacklist_enabled()
+            blacklist_enabled = await get_privacy_blacklist_enabled(session=session)
             if blacklist_enabled:
                 try:
                     bl_res = await session.execute(
@@ -309,12 +309,10 @@ class InviterOrchestrator:
                         )
                     break
 
-                daily_limit, excluded_ids, blacklist_enabled, recent_only = await asyncio.gather(
-                    get_daily_invite_limit(),
-                    get_excluded_worker_ids(),
-                    get_privacy_blacklist_enabled(),
-                    get_recent_only_enabled(),
-                )
+                daily_limit = await get_daily_invite_limit(session=session)
+                excluded_ids = await get_excluded_worker_ids(session=session)
+                blacklist_enabled = await get_privacy_blacklist_enabled(session=session)
+                recent_only = await get_recent_only_enabled(session=session)
                 is_sqlite = "sqlite" in settings.DATABASE_URL
                 worker_conditions = [
                     Account.is_active == True,
