@@ -64,6 +64,7 @@ async def get_recent_only_enabled() -> bool:
 async def set_recent_only_enabled(enabled: bool) -> None:
     await set_app_setting(RECENT_ONLY_KEY, "true" if enabled else "false")
 
+# persist excluded worker ids as a json list in app_settings
 EXCLUDED_WORKERS_KEY = "excluded_worker_ids"
 
 async def get_excluded_worker_ids() -> list[int]:

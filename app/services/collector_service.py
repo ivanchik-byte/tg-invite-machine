@@ -23,6 +23,7 @@ from app.telegram.client_factory import get_telethon_client
 
 ProgressCallback = Callable[[int, str, Optional[str]], Awaitable[None]]
 
+# online now or active within last 1-3 days; excludes dormant accounts early
 FRESH_STATUSES = (UserStatusOnline, UserStatusRecently)
 
 
@@ -190,6 +191,7 @@ async def collect_chat_members(
                 existing_skipped += 1
                 continue
 
+            # snapshot status at collect time so inviter queue filters without extra RPC
             seen_at = utc_now() if isinstance(getattr(tg_user, "status", None), FRESH_STATUSES) else None
             member = AudienceMember(
                 tg_id=tg_user.id,

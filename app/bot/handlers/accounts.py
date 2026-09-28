@@ -377,6 +377,7 @@ async def handle_account_password(message: Message, state: FSMContext):
 
 
 def _account_tag(acc, excluded: bool, now: datetime) -> str:
+    # badge priority: explicit skip > dead/banned > cooldown > missing proxy > ready
     if excluded:
         return "[SKIP]"
     if acc.status == "banned":
@@ -684,6 +685,7 @@ async def callback_check_all(callback: CallbackQuery):
         await callback.answer()
         return
 
+    # cap concurrent handshakes to prevent socket exhaustion and MTProto rate limits
     semaphore = asyncio.Semaphore(8)
 
     async def probe(acc):
@@ -756,6 +758,7 @@ async def callback_check_spambot(callback: CallbackQuery):
         await safe_edit_text(callback.message, "Нет аккаунтов для проверки через @SpamBot.", reply_markup=back_keyboard("nav_accounts"))
         return
 
+    # limit concurrent spambot dialogs to avoid rate limiting the pool
     semaphore = asyncio.Semaphore(3)
 
     async def probe(acc):

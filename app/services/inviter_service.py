@@ -319,6 +319,7 @@ class InviterOrchestrator:
                 excluded_ids = await get_excluded_worker_ids()
                 if excluded_ids:
                     worker_conditions.append(~Account.id.in_(excluded_ids))
+                # order by last_attempt_at so failed targets rotate instead of sticking to one worker
                 worker_query = select(Account).options(selectinload(Account.proxy)).where(
                     and_(*worker_conditions)
                 ).order_by(Account.last_attempt_at.asc().nullsfirst(), Account.id.asc()).limit(1)
@@ -418,6 +419,7 @@ class InviterOrchestrator:
                             AudienceMember.tg_id.not_in(restricted_subq)
                         )
                     )
+                # filter by snapshot taken at scrape time to avoid extra get_entity calls
                 if await get_recent_only_enabled():
                     conditions.append(AudienceMember.last_seen_at.is_not(None))
 
@@ -592,6 +594,7 @@ class InviterOrchestrator:
                 db_member = await session.get(AudienceMember, member_id)
                 db_account = await session.get(Account, account_id)
                 if db_account:
+                    # stamp attempt unconditionally so failed invites don't pin the same worker
                     db_account.last_attempt_at = now
 
                 if invite_success:
