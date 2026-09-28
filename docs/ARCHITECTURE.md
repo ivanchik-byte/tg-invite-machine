@@ -1,6 +1,6 @@
 # Архитектура системы TG-Invite-Machine
 
-Документ описывает техническое устройство, внутренние модули, алгоритмы обработки данных, схемы конвейеров инвайтинга и структуру базы данных TG-Invite-Machine версии v0.1.2-stable.
+Документ описывает техническое устройство, внутренние модули, алгоритмы обработки данных, схемы конвейеров инвайтинга и структуру базы данных TG-Invite-Machine версии v0.2.0-stable.
 
 ---
 
@@ -23,6 +23,7 @@ TG-Invite-Machine спроектирован по принципу раздел�
                   |  - AdminOnlyMiddleware (RBAC проверка ID)    |
                   |  - FSM контекст (сбор, лимиты, интервалы)    |
                   |  - Inline UI & Панель предстартовой настройки|
+                  |  - Модуль консоли управления (dashboard.py)  |
                   +----------------------+-----------------------+
                                          |
                                          v
@@ -32,7 +33,7 @@ TG-Invite-Machine спроектирован по принципу раздел�
                   |  - InviterOrchestrator & TaskManager         |
                   |  - CollectorService (активные / все)         |
                   |  - AccountService & ProxyService             |
-                  |  - SpamBotService & ExportService            |
+                  |  - SettingsService & SpamBotService          |
                   +-----------+----------------------+-----------+
                               |                      |
                               v                      v
@@ -61,14 +62,15 @@ tg-invite-machine/
 ├── app/
 │   ├── bot/
 │   │   ├── handlers/
-│   │   │   ├── accounts.py       # Загрузка сессий, TData, ввод 2FA, аудит
-│   │   │   ├── common.py         # Главное меню и системная статистика
-│   │   │   ├── inviter.py        # Настройка лимитов, интервалов, запуск и контроль задач
+│   │   │   ├── accounts.py       # Загрузка сессий, TData, ввод 2FA, 2-column grid, аудит
+│   │   │   ├── inviter.py        # Настройка лимитов, режимов (карусель/план), запуск задач
+│   │   │   ├── menu.py           # Маршрутизация главного меню и системной телеметрии
 │   │   │   ├── parser.py         # Настройка и запуск сбора участников
-│   │   │   └── proxies.py        # Добавление и валидация SOCKS5/HTTP прокси
+│   │   │   └── proxies.py        # Добавление, валидация и дедупликация SOCKS5/HTTP прокси
 │   │   ├── middlewares/
 │   │   │   └── auth.py           # Проверка прав администратора бота
-│   │   ├── keyboards.py          # Меню, пагинация и чипы конфигурации
+│   │   ├── dashboard.py          # Формирование текста консоли, прогресс-баров и телеметрии
+│   │   ├── keyboards.py          # Меню, сетки аккаунтов, пагинация и чипы конфигурации
 │   │   ├── states.py             # FSM состояния (AccountState, InviterState и др.)
 │   │   └── main.py               # Точка входа Telegram-бота
 │   │
@@ -76,17 +78,18 @@ tg-invite-machine/
 │   │   ├── config.py             # Валидация настроек Pydantic v2
 │   │   ├── database.py           # Инициализация SQLAlchemy, PRAGMA WAL, сессии
 │   │   ├── security.py           # Шифрование Fernet, безопасная распаковка архивов
+│   │   ├── settings_service.py   # Хранение и чтение параметров в таблице app_settings
 │   │   └── utils.py              # Нормализация юзернеймов, безопасное редактирование UI
 │   │
 │   ├── models/
-│   │   └── models.py             # Модели: Account, Proxy, TargetGroup, AudienceMember, InviteTask
+│   │   └── models.py             # Модели: Account, Proxy, TargetGroup, AudienceMember, InviteTask, AppSetting
 │   │
 │   ├── services/
-│   │   ├── account_service.py    # Регистрация и пакетный импорт аккаунтов
-│   │   ├── collector_service.py  # Сбор участников по сообщениям и по алфавиту
+│   │   ├── account_service.py    # Регистрация, отлежка и пакетный импорт аккаунтов
+│   │   ├── collector_service.py  # Сбор участников со снимком активности last_seen_at
 │   │   ├── export_service.py     # Генерация отчетов Excel (.xlsx) и списков (.txt)
-│   │   ├── inviter_service.py    # Оркестратор инвайтинга, расчет задержек, Circuit Breaker
-│   │   ├── proxy_service.py      # Парсинг строковых прокси и TCP-проверка
+│   │   ├── inviter_service.py    # Честная карусель воркеров, режимы, Circuit Breaker
+│   │   ├── proxy_service.py      # Парсинг прокси, валидация и endpoint-дедупликация
 │   │   ├── spambot_service.py    # Автоматический опрос @SpamBot для пула аккаунтов
 │   │   └── task_manager.py       # Менеджер активных фоновых задач и UI-троттлинг
 │   │
@@ -96,7 +99,7 @@ tg-invite-machine/
 │
 ├── data/                         # Директория для inviter.db и экспортированных файлов
 ├── docs/                         # Техническая документация
-├── tests/                        # Набор из 73 тестов pytest
+├── tests/                        # Набор из 90 тестов pytest
 ├── Dockerfile                    # Сборка контейнера приложения
 ├── docker-compose.yml            # Сервисная конфигурация Docker
 ├── requirements.txt              # Зависимости Python
@@ -128,8 +131,14 @@ tg-invite-machine/
 Вся сетевая активность рабочих аккаунтов строго привязана к их прокси:
 - При включенной настройке `REQUIRE_STRICT_PROXIES=true` фабрика клиентов `client_factory.py` выбрасывает исключение `ProxySecurityError`, если прокси отсутствует или деактивирован.
 - Валидация прокси: параллельный опрос пула через `asyncio.Semaphore(10)` с проверкой доступности точки Telegram DC2 (`149.154.175.54:443`).
-- Дедупликация: проверка существующих записей по составному ключу `(host, port, protocol, username)` со сравнением дешифрованных паролей и реактивацией при повторном импорте.
+- Дедупликация: проверка существующих записей по составному ключу `(host, port, protocol, username)` со сравнением дешифрованных паролей, фильтрацией дубликатов внутри одного пакета и реактивацией при повторном импорте.
 - Автоматическая привязка: свободные активные прокси автоматически распределяются по аккаунтам при старте кампании или через кнопку в интерфейсе.
+
+### Двухколоночная сетка аккаунтов и исключение воркеров
+Для наглядного контроля пула номеров реализована интерактивная двухколоночная сетка:
+- Статусы номеров маркируются бейджами: `[OK P#]` (активен с привязанным прокси), `[CD]` (отлежка), `[SKIP]` (исключен оператором), `[NO PRX]` (нет прокси).
+- Постраничная навигация (по 10 аккаунтов на страницу) исключает раздувание Telegram-сообщения.
+- Нажатие на кнопку аккаунта переключает его участие в инвайтинге без удаления из базы. Список исключенных ID сериализуется в таблице `app_settings` (ключ `excluded_worker_ids`).
 
 ---
 
@@ -144,38 +153,58 @@ sequenceDiagram
     participant DB as SQLite / PostgreSQL
     participant TG as Telegram MTProto
 
-    TM->>ORCH: Запуск задачи (task_id, target, limit, profile)
+    TM->>ORCH: Запуск задачи (task_id, target, limit, profile, mode)
     ORCH->>TG: Pre-Sync: опрос участников целевого чата (iter_participants)
     ORCH->>DB: Пометка уже состоящих пользователей (status = already_participant)
     ORCH->>DB: Фильтрация закрытых аккаунтов через AudienceHistory (блэклист)
     loop Цикл инвайтинга
-        ORCH->>DB: Проверка достижения max_invites
+        ORCH->>DB: Проверка условий завершения (Target Plan или очередь пуста)
         opt Лимит достигнут
             ORCH->>DB: Статус completed, фиксация finished_at
             ORCH->>TM: Уведомление о завершении
         end
-        ORCH->>DB: Выбор доступного аккаунта (лимит не превышен, статус active)
-        ORCH->>DB: Выбор целевого пользователя из очереди (status = pending)
+        ORCH->>DB: Выбор аккаунта по Fair Carousel (last_attempt_at ASC NULLSFIRST)
+        ORCH->>DB: Выбор целевого пользователя (pending, с учетом recent_only)
         ORCH->>TG: Pre-invite: выставление статуса + эмуляция чтения
         ORCH->>TG: InviteToChannelRequest(target, user)
         alt Успешно
             ORCH->>DB: member.status = invited, account.record_invite()
+            ORCH->>DB: account.last_attempt_at = now
             ORCH->>ORCH: Сброс счетчика Circuit Breaker (floods = 0)
         else FloodWaitError
             ORCH->>DB: account.cooldown = now + wait_time, member.status = pending
+            ORCH->>DB: account.last_attempt_at = now
         else PeerFloodError
             ORCH->>DB: account.cooldown = now + 5m, member.status = pending
+            ORCH->>DB: account.last_attempt_at = now
         else UserPrivacyRestricted / ChannelsTooMuch
             ORCH->>DB: member.status = restricted, сохранение в AudienceHistory
+            ORCH->>DB: account.last_attempt_at = now
         else AccountBannedError
             ORCH->>DB: account.status = banned, member.status = pending
+            ORCH->>DB: account.last_attempt_at = now
         end
         opt Все аккаунты в отлежке (wait <= 10m)
             ORCH->>ORCH: Автоматическое ожидание с таймером в UI и возобновление
         end
-        ORCH->>ORCH: Пауза по тримодальной модели
+        ORCH->>ORCH: Пауза по профилю скорости (тримодальный джиттер)
     end
 ```
+
+### Честная карусель воркеров (Fair Worker Carousel)
+Метод `get_next_available_account` извлекает доступный аккаунт с сортировкой по `Account.last_attempt_at.asc().nullsfirst()`. На каждом шаге цикла (при успехе, флуде или приватном отказе целевого контакта) поле `last_attempt_at` безусловно обновляется. Это предотвращает эффект залипания на одном и том же номере и равномерно распределяет нагрузку между всеми рабочими сессиями.
+
+### Снимок активности аудитории (Activity Snapshot)
+Во время парсинга участников через `CollectorService` статус пользователя сопоставляется с типами `UserStatusOnline` и `UserStatusRecently`. При совпадении фиксируется метка времени в поле `AudienceMember.last_seen_at`. При включенном фильтре свежей аудитории оркестратор отбирает контакты условием `AudienceMember.last_seen_at.is_not(None)`, исключая сетевые MTProto-запросы на этапе выборки.
+
+### Режимы инвайтинга (Dual Modes)
+1. **Безопасная карусель (Safe Carousel)**:
+   - Профиль задержки по умолчанию: `carousel:60:180` (1-3 минуты между действиями).
+   - Включен фильтр недавно активной аудитории (`recent_only = True`).
+   - Равномерный дрип-инвайтинг по всей очереди контактов без форсированного прерывания.
+2. **Целевой план (Target Plan)**:
+   - Инвайтинг продолжается до тех пор, пока `successful_invites` не достигнет заданного оператором лимита `max_invites`.
+   - Промежуточные приватные ограничения не уменьшают целевую квоту.
 
 ### Сохранение очереди пользователей
 При возникновении ошибок на стороне сессии (FloodWait, PeerFlood, бан аккаунта, отсутствие прав администратора) целевой пользователь не удаляется из очереди и не помечается как отклоненный. Статус остается `pending`, поэтому данный контакт будет добавлен при следующей ротации или после отлежки.
@@ -228,6 +257,7 @@ erDiagram
         int proxy_id FK
         int daily_invites_count
         datetime last_invite_at
+        datetime last_attempt_at
         datetime cooldown_until
         int flood_incidents
     }
@@ -249,6 +279,7 @@ erDiagram
         string username
         string first_name
         string source_chat
+        datetime last_seen_at
         string status "pending / invited / restricted / deferred"
         string reason
         int invited_by_account_id FK
@@ -276,6 +307,12 @@ erDiagram
         int restricted_count
         int flood_errors
         datetime finished_at
+    }
+
+    APP_SETTINGS {
+        string key PK
+        string value
+        datetime updated_at
     }
 ```
 
