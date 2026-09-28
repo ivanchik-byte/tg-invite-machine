@@ -54,6 +54,8 @@ async def init_db() -> None:
                 if task_cols:
                     if "max_invites" not in task_cols:
                         conn.execute(text("ALTER TABLE invite_tasks ADD COLUMN max_invites INTEGER;"))
+                    if "concurrency_mode" not in task_cols:
+                        conn.execute(text("ALTER TABLE invite_tasks ADD COLUMN concurrency_mode VARCHAR(32) DEFAULT 'sequential';"))
                 aud_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(audience_members)")).fetchall()]
                 if aud_cols:
                     if "access_hash" not in aud_cols:
@@ -72,4 +74,5 @@ async def init_db() -> None:
                 from sqlalchemy import text
                 conn.execute(text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMP;"))
                 conn.execute(text("ALTER TABLE audience_members ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP;"))
+                conn.execute(text("ALTER TABLE invite_tasks ADD COLUMN IF NOT EXISTS concurrency_mode VARCHAR(32) DEFAULT 'sequential';"))
             await connection.run_sync(run_pg_migrations)

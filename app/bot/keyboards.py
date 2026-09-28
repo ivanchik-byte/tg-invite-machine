@@ -179,7 +179,12 @@ def speed_profile_keyboard(current_profile: str = "normal") -> InlineKeyboardMar
     )
     return builder.as_markup()
 
-def inviter_config_keyboard(selected_limit: Optional[int], current_profile: str, recent_only: bool = False) -> InlineKeyboardMarkup:
+def inviter_config_keyboard(
+    selected_limit: Optional[int],
+    current_profile: str,
+    recent_only: bool = False,
+    concurrency_mode: str = "sequential"
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
     carousel_mark = "• " if selected_limit is None else ""
@@ -188,6 +193,16 @@ def inviter_config_keyboard(selected_limit: Optional[int], current_profile: str,
         InlineKeyboardButton(text=f"{carousel_mark}Карусель (Safe)", callback_data="cfg_mode_carousel"),
         InlineKeyboardButton(text=f"{target_mark}Целевой план (Target)", callback_data="cfg_mode_target"),
     )
+
+    seq_mark = "• " if concurrency_mode == "sequential" else ""
+    async_mark = "• " if concurrency_mode == "parallel_async" else ""
+    sync_mark = "• " if concurrency_mode == "sync_batch" else ""
+    builder.row(
+        InlineKeyboardButton(text=f"{seq_mark}По очереди", callback_data="cfg_dispatch_sequential"),
+        InlineKeyboardButton(text=f"{async_mark}Асинхронно", callback_data="cfg_dispatch_parallel_async"),
+        InlineKeyboardButton(text=f"{sync_mark}Сразу все", callback_data="cfg_dispatch_sync_batch"),
+    )
+
     chips = [5, 10, 20, 50]
     limit_buttons = []
     for val in chips:

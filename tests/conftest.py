@@ -24,6 +24,11 @@ def setup_test_settings():
     settings.ADMIN_ID = 123456789
     yield
 
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def ensure_db_initialized():
+    from app.core.database import init_db
+    await init_db()
+
 @pytest_asyncio.fixture
 async def test_session():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)

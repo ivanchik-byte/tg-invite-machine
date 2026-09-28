@@ -123,6 +123,7 @@ class InviteTask(Base):
     target_group_id: Mapped[int] = mapped_column(ForeignKey("target_groups.id", ondelete="CASCADE"), nullable=False)
     target_group: Mapped[Optional[TargetGroup]] = relationship("TargetGroup")
     speed_profile: Mapped[str] = mapped_column(String(32), default="normal")
+    concurrency_mode: Mapped[str] = mapped_column(String(32), default="sequential", server_default="sequential")
     status: Mapped[str] = mapped_column(String(32), default="pending")
     max_invites: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     total_targets: Mapped[int] = mapped_column(Integer, default=0)

@@ -26,6 +26,7 @@ from app.core.settings_service import (
     set_recent_only_enabled,
     get_speed_profile,
     set_speed_profile,
+    get_default_concurrency_mode,
 )
 from app.bot.states import InviterState
 from app.bot.keyboards import (
@@ -470,15 +471,19 @@ async def _show_pre_launch_config(
     target_link: str,
     chat_type: str,
     selected_limit: Optional[int] = 20,
-    speed_profile: Optional[str] = None
+    speed_profile: Optional[str] = None,
+    concurrency_mode: Optional[str] = None
 ):
     profile = speed_profile or await get_speed_profile()
+    draft = await state.get_data()
+    mode = concurrency_mode or draft.get("concurrency_mode") or await get_default_concurrency_mode()
     await state.update_data(
         target_group_id=target_group_id,
         target_link=target_link,
         chat_type=chat_type,
         selected_limit=selected_limit,
-        speed_profile=profile
+        speed_profile=profile,
+        concurrency_mode=mode
     )
     type_label = TARGET_TYPE_LABELS.get(chat_type, "сообщество")
     limit_text = str(selected_limit) if selected_limit is not None else "Все доступные"
@@ -495,6 +500,14 @@ async def _show_pre_launch_config(
     daily_limit = await get_daily_invite_limit()
     recent_only = await get_recent_only_enabled()
     recent_text = "только недавно в сети" if recent_only else "все собранные"
+
+    if mode == "parallel_async":
+        mode_text = "Асинхронно (Мульти-воркер)"
+    elif mode == "sync_batch":
+        mode_text = "Сразу все (Синхронный залп)"
+    else:
+        mode_text = "По очереди (Карусель)"
+
     text = (
         "<b>TG-INVITE-MACHINE | Параметры инвайтинга</b>\n"
         "────────────────────────\n"
@@ -502,11 +515,17 @@ async def _show_pre_launch_config(
         f"• <b>Лимит на эту задачу:</b> <code>{limit_text}</code> приглашенных\n"
         f"• <b>Суточный лимит сессий:</b> <code>{daily_limit}</code> успешно добавленных на акк\n"
         f"• <b>Режим скорости:</b> <code>{speed_text}</code>\n"
+        f"• <b>Режим воркеров:</b> <code>{mode_text}</code>\n"
         f"• <b>Аудитория:</b> <code>{recent_text}</code>\n\n"
         "<i>Лимиты считают только реально добавленных людей, пропуски и приватные профили лимит не тратят.</i>\n\n"
         "Настройте параметры кнопками ниже и запустите задачу:"
     )
-    keyboard = inviter_config_keyboard(selected_limit=selected_limit, current_profile=profile, recent_only=recent_only)
+    keyboard = inviter_config_keyboard(
+        selected_limit=selected_limit,
+        current_profile=profile,
+        recent_only=recent_only,
+        concurrency_mode=mode
+    )
     await safe_edit_text(message, text, reply_markup=keyboard)
 
 
@@ -633,6 +652,34 @@ async def callback_cfg_mode_target(callback: CallbackQuery, state: FSMContext):
     await callback.answer("Режим Целевой план: остановка ровно на лимите успешных")
 
 
+@inviter_router.callback_query(F.data.startswith("cfg_dispatch_"))
+async def callback_cfg_dispatch(callback: CallbackQuery, state: FSMContext):
+    mode = callback.data.replace("cfg_dispatch_", "")
+    data = await state.get_data()
+    target_group_id = data.get("target_group_id")
+    target_link = data.get("target_link", "")
+    chat_type = data.get("chat_type", "supergroup")
+    selected_limit = data.get("selected_limit", 20)
+    speed_profile = data.get("speed_profile") or await get_speed_profile()
+
+    await _show_pre_launch_config(
+        callback.message,
+        state,
+        target_group_id,
+        target_link,
+        chat_type,
+        selected_limit=selected_limit,
+        speed_profile=speed_profile,
+        concurrency_mode=mode
+    )
+    labels = {
+        "sequential": "Режим: По очереди (Карусель)",
+        "parallel_async": "Режим: Асинхронно (Мульти-воркер)",
+        "sync_batch": "Режим: Сразу все (Синхронный залп)",
+    }
+    await callback.answer(labels.get(mode, "Режим воркеров обновлен"))
+
+
 @inviter_router.callback_query(F.data == "cfg_cancel")
 async def callback_cfg_cancel(callback: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -748,6 +795,7 @@ async def callback_cfg_launch(callback: CallbackQuery, state: FSMContext, bot: B
     chat_type = data.get("chat_type", "supergroup")
     selected_limit = data.get("selected_limit", 20)
     speed_profile = data.get("speed_profile") or await get_speed_profile()
+    concurrency_mode = data.get("concurrency_mode") or await get_default_concurrency_mode()
 
     if not target_group_id or not target_link:
         await callback.answer("Ошибка: данные задачи устарели. Начните заново.", show_alert=True)
@@ -760,6 +808,7 @@ async def callback_cfg_launch(callback: CallbackQuery, state: FSMContext, bot: B
         chat_type=chat_type,
         selected_limit=selected_limit,
         speed_profile=speed_profile,
+        concurrency_mode=concurrency_mode,
         state=state,
         bot=bot,
         status_msg=callback.message
@@ -773,6 +822,7 @@ async def _create_and_launch_task(
     chat_type: str,
     selected_limit: Optional[int],
     speed_profile: str,
+    concurrency_mode: str,
     state: FSMContext,
     bot: Bot,
     status_msg: Message
@@ -788,6 +838,7 @@ async def _create_and_launch_task(
         task = InviteTask(
             target_group_id=target_group_id,
             speed_profile=speed_profile,
+            concurrency_mode=concurrency_mode,
             max_invites=selected_limit,
             status="running",
             total_targets=pending_total
@@ -797,7 +848,7 @@ async def _create_and_launch_task(
         launched_task_id = task.id
 
     await state.clear()
-    orchestrator = InviterOrchestrator(task_id=launched_task_id)
+    orchestrator = InviterOrchestrator(task_id=launched_task_id, concurrency_mode=concurrency_mode)
 
     chat_id = status_msg.chat.id
     message_id = status_msg.message_id

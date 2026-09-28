@@ -128,3 +128,20 @@ async def set_speed_profile(profile: str, session: Optional[AsyncSession] = None
     if profile not in VALID_SPEED_PROFILES and not profile.startswith("custom:"):
         raise ValueError(f"Unknown speed profile: {profile}")
     await set_app_setting(SPEED_PROFILE_KEY, profile, session=session)
+
+
+DEFAULT_CONCURRENCY_MODE_KEY = "default_concurrency_mode"
+VALID_CONCURRENCY_MODES = {"sequential", "parallel_async", "sync_batch"}
+
+
+async def get_default_concurrency_mode(session: Optional[AsyncSession] = None) -> str:
+    val = await get_app_setting(DEFAULT_CONCURRENCY_MODE_KEY, default="sequential", session=session)
+    if val in VALID_CONCURRENCY_MODES:
+        return val
+    return "sequential"
+
+
+async def set_default_concurrency_mode(mode: str, session: Optional[AsyncSession] = None) -> None:
+    if mode not in VALID_CONCURRENCY_MODES:
+        raise ValueError(f"Unknown concurrency mode: {mode}")
+    await set_app_setting(DEFAULT_CONCURRENCY_MODE_KEY, mode, session=session)
