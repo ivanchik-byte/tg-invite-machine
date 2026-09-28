@@ -78,7 +78,7 @@ async def build_main_dashboard_text() -> str:
         status_tag = "<code>[ IDLE ] Ожидание запуска</code>"
 
     header = (
-        "<b>TG-INVITE-MACHINE</b> <code>v0.1.2</code> | <b>Консоль управления</b>\n"
+        "<b>TG-INVITE-MACHINE</b> <code>v0.2.0</code> | <b>Консоль управления</b>\n"
         "────────────────────────\n"
         f"<b>Статус системы:</b> {status_tag}\n\n"
     )

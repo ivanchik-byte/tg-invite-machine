@@ -28,7 +28,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.settings_service import get_daily_invite_limit, get_privacy_blacklist_enabled
+from app.core.settings_service import get_daily_invite_limit, get_privacy_blacklist_enabled, get_recent_only_enabled, get_excluded_worker_ids
 from app.models.models import Account, AudienceMember, TargetGroup, InviteTask, AudienceHistory
 from app.telegram.client_factory import get_telethon_client
 from app.services.account_service import auto_recover_cooldowns
@@ -311,13 +311,17 @@ class InviterOrchestrator:
 
                 daily_limit = await get_daily_invite_limit()
                 is_sqlite = "sqlite" in settings.DATABASE_URL
+                worker_conditions = [
+                    Account.is_active == True,
+                    Account.status == "active",
+                    Account.daily_invites_count < daily_limit,
+                ]
+                excluded_ids = await get_excluded_worker_ids()
+                if excluded_ids:
+                    worker_conditions.append(~Account.id.in_(excluded_ids))
                 worker_query = select(Account).options(selectinload(Account.proxy)).where(
-                    and_(
-                        Account.is_active == True,
-                        Account.status == "active",
-                        Account.daily_invites_count < daily_limit
-                    )
-                ).order_by(Account.last_invite_at.asc().nullsfirst()).limit(1)
+                    and_(*worker_conditions)
+                ).order_by(Account.last_attempt_at.asc().nullsfirst(), Account.id.asc()).limit(1)
 
                 if not is_sqlite:
                     worker_query = worker_query.with_for_update(skip_locked=True)
@@ -414,6 +418,8 @@ class InviterOrchestrator:
                             AudienceMember.tg_id.not_in(restricted_subq)
                         )
                     )
+                if await get_recent_only_enabled():
+                    conditions.append(AudienceMember.last_seen_at.is_not(None))
 
                 target_query = select(AudienceMember).where(and_(*conditions)).order_by(AudienceMember.id.asc()).limit(1)
 
@@ -585,6 +591,8 @@ class InviterOrchestrator:
                 task = await session.get(InviteTask, self.task_id)
                 db_member = await session.get(AudienceMember, member_id)
                 db_account = await session.get(Account, account_id)
+                if db_account:
+                    db_account.last_attempt_at = now
 
                 if invite_success:
                     # reset consecutive flood counter on first successful invite

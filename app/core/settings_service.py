@@ -1,3 +1,4 @@
+import json
 from typing import Optional
 from sqlalchemy import select
 from app.core.config import settings
@@ -9,6 +10,7 @@ VALID_SPEED_PROFILES = {"cautious", "normal", "fast"}
 
 DAILY_LIMIT_KEY = "daily_invite_limit"
 PRIVACY_BLACKLIST_KEY = "privacy_blacklist_enabled"
+RECENT_ONLY_KEY = "recent_only_enabled"
 
 async def get_app_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     async with async_session_factory() as session:
@@ -54,6 +56,31 @@ async def get_privacy_blacklist_enabled() -> bool:
 
 async def set_privacy_blacklist_enabled(enabled: bool) -> None:
     await set_app_setting(PRIVACY_BLACKLIST_KEY, "true" if enabled else "false")
+
+async def get_recent_only_enabled() -> bool:
+    val = await get_app_setting(RECENT_ONLY_KEY, default="false")
+    return str(val).lower() in ("true", "1", "yes")
+
+async def set_recent_only_enabled(enabled: bool) -> None:
+    await set_app_setting(RECENT_ONLY_KEY, "true" if enabled else "false")
+
+EXCLUDED_WORKERS_KEY = "excluded_worker_ids"
+
+async def get_excluded_worker_ids() -> list[int]:
+    val = await get_app_setting(EXCLUDED_WORKERS_KEY, default="[]")
+    try:
+        parsed = json.loads(val or "[]")
+        return [int(v) for v in parsed if str(v).isdigit()]
+    except (ValueError, TypeError):
+        return []
+
+async def set_worker_excluded(account_id: int, excluded: bool) -> None:
+    current = set(await get_excluded_worker_ids())
+    if excluded:
+        current.add(account_id)
+    else:
+        current.discard(account_id)
+    await set_app_setting(EXCLUDED_WORKERS_KEY, json.dumps(sorted(current)))
 
 async def get_speed_profile() -> str:
     val = await get_app_setting(SPEED_PROFILE_KEY)

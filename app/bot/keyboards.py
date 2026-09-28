@@ -92,6 +92,7 @@ def inviter_menu_keyboard(
     is_paused: bool = False,
     daily_limit: Optional[int] = None,
     privacy_blacklist: bool = True,
+    recent_only: bool = False,
     paused_task_id: Optional[int] = None,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -112,6 +113,10 @@ def inviter_menu_keyboard(
         bl_text = "Блэклист приватности: [ВКЛ]" if privacy_blacklist else "Блэклист приватности: [ВЫКЛ]"
         builder.row(
             InlineKeyboardButton(text=bl_text, callback_data="invite_toggle_blacklist")
+        )
+        recent_text = "Только недавно в сети: [ВКЛ]" if recent_only else "Только недавно в сети: [ВЫКЛ]"
+        builder.row(
+            InlineKeyboardButton(text=recent_text, callback_data="invite_toggle_recent")
         )
         builder.row(
             InlineKeyboardButton(text="История инвайтов", callback_data="invite_history")
@@ -175,9 +180,15 @@ def speed_profile_keyboard(current_profile: str = "normal") -> InlineKeyboardMar
     )
     return builder.as_markup()
 
-def inviter_config_keyboard(selected_limit: Optional[int], current_profile: str) -> InlineKeyboardMarkup:
+def inviter_config_keyboard(selected_limit: Optional[int], current_profile: str, recent_only: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
+    carousel_mark = "• " if selected_limit is None else ""
+    target_mark = "• " if selected_limit is not None else ""
+    builder.row(
+        InlineKeyboardButton(text=f"{carousel_mark}Карусель (Safe)", callback_data="cfg_mode_carousel"),
+        InlineKeyboardButton(text=f"{target_mark}Целевой план (Target)", callback_data="cfg_mode_target"),
+    )
     chips = [5, 10, 20, 50]
     limit_buttons = []
     for val in chips:
@@ -234,6 +245,27 @@ def migrate_confirm_keyboard() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="Отмена", callback_data="migrate_cancel"))
     return builder.as_markup()
 
+def accounts_grid_keyboard(entries: list, offset: int, limit: int, total: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    row = []
+    for acc_id, tag, short in entries:
+        row.append(InlineKeyboardButton(text=f"{tag} {short}", callback_data=f"acc_view_{acc_id}_{offset}"))
+        if len(row) == 2:
+            builder.row(*row)
+            row = []
+    if row:
+        builder.row(*row)
+    nav_buttons = []
+    if offset > 0:
+        nav_buttons.append(InlineKeyboardButton(text="Назад", callback_data=f"acc_list_{max(0, offset - limit)}"))
+    if offset + limit < total:
+        nav_buttons.append(InlineKeyboardButton(text="Вперед", callback_data=f"acc_list_{offset + limit}"))
+    if nav_buttons:
+        builder.row(*nav_buttons)
+    builder.row(InlineKeyboardButton(text="К списку меню", callback_data="nav_accounts"))
+    return builder.as_markup()
+
+
 def accounts_pagination_keyboard(offset: int, limit: int, total: int, account_items: list | None = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if account_items:
@@ -253,8 +285,12 @@ def accounts_pagination_keyboard(offset: int, limit: int, total: int, account_it
     builder.row(InlineKeyboardButton(text="К списку меню", callback_data="nav_accounts"))
     return builder.as_markup()
 
-def account_view_keyboard(acc_id: int, offset: int, has_proxy: bool = False) -> InlineKeyboardMarkup:
+def account_view_keyboard(acc_id: int, offset: int, has_proxy: bool = False, excluded: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    excl_text = "Убрать из задачи [SKIP]" if excluded else "В задаче [ВКЛ]"
+    builder.row(
+        InlineKeyboardButton(text=excl_text, callback_data=f"acc_excl_{acc_id}_{offset}")
+    )
     builder.row(
         InlineKeyboardButton(text="Выбрать/сменить прокси", callback_data=f"acc_proxy_pick_{acc_id}_{offset}")
     )

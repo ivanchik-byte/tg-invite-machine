@@ -20,11 +20,12 @@ from app.bot.states import AccountState
 from app.bot.keyboards import (
     accounts_menu_keyboard,
     back_keyboard,
-    accounts_pagination_keyboard,
+    accounts_grid_keyboard,
     account_view_keyboard,
     account_proxy_pick_keyboard,
 )
 from app.core.utils import safe_edit_text
+from app.core.settings_service import get_excluded_worker_ids, set_worker_excluded
 from app.telegram.converter import convert_tdata_archive, import_session_file, PASSWORD_REQUIRED
 from app.telegram.client_factory import get_telethon_client, decrypt_proxy_password, build_proxy_dict, ProxySecurityError
 from app.services.account_service import (
@@ -62,6 +63,14 @@ async def callback_nav_accounts(callback: CallbackQuery, state: FSMContext | Non
         banned = (await session.execute(
             select(func.count(Account.id)).where(Account.status == "banned")
         )).scalar_one()
+        no_proxy = (await session.execute(
+            select(func.count(Account.id)).where(
+                Account.is_active == True,
+                Account.status == "active",
+                Account.proxy_id.is_(None)
+            )
+        )).scalar_one()
+    excluded_total = len(await get_excluded_worker_ids())
 
     text = (
         "<b>TG-INVITE-MACHINE | Управление пулом сессий</b>\n"
@@ -69,7 +78,9 @@ async def callback_nav_accounts(callback: CallbackQuery, state: FSMContext | Non
         f"<b>Всего в базе данных:</b> <code>{count}</code> аккаунтов\n"
         f"• <b>Готовы к работе:</b> <code>{active}</code>\n"
         f"• <b>В режиме отлежки (FloodWait):</b> <code>{cooldown}</code>\n"
-        f"• <b>Заблокированы:</b> <code>{banned}</code>\n\n"
+        f"• <b>Заблокированы:</b> <code>{banned}</code>\n"
+        f"• <b>Без прокси [WARN]:</b> <code>{no_proxy}</code>\n"
+        f"• <b>Исключены из задач [SKIP]:</b> <code>{excluded_total}</code>\n\n"
         "<b>Способы загрузки:</b>\n"
         "Отправьте документ в чат:\n"
         "• <code>.session</code> - файл сессии Telethon\n"
@@ -365,6 +376,25 @@ async def handle_account_password(message: Message, state: FSMContext):
         Path(archive_path).unlink(missing_ok=True)
 
 
+def _account_tag(acc, excluded: bool, now: datetime) -> str:
+    if excluded:
+        return "[SKIP]"
+    if acc.status == "banned":
+        return "[BAN]"
+    if acc.status == "spambot":
+        return "[SB]"
+    if acc.status == "cooldown":
+        if acc.cooldown_until and acc.cooldown_until > now:
+            rem = int((acc.cooldown_until - now).total_seconds())
+            return f"[CD {rem // 60}м]" if rem >= 60 else f"[CD {rem}с]"
+        return "[CD]"
+    if not acc.is_active:
+        return "[OFF]"
+    if not acc.proxy_id:
+        return "[NO PRX]"
+    return f"[OK P#{acc.proxy_id}]"
+
+
 @accounts_router.callback_query(F.data.startswith("acc_list_"))
 async def callback_list_accounts(callback: CallbackQuery):
     try:
@@ -397,7 +427,8 @@ async def callback_list_accounts(callback: CallbackQuery):
     page_num = (offset // limit) + 1
     total_pages = max(1, (total + limit - 1) // limit)
     lines = [f"<b>Список аккаунтов</b> (всего: {total}, стр. {page_num}/{total_pages}):\n"]
-    account_items = []
+    excluded_ids = set(await get_excluded_worker_ids())
+    entries = []
     for acc in accounts:
         display_name = acc.username and f"@{acc.username}" or acc.first_name or acc.phone
         if acc.status == "cooldown":
@@ -414,16 +445,15 @@ async def callback_list_accounts(callback: CallbackQuery):
         proxy_desc = f"прокси #{acc.proxy_id}" if acc.proxy_id else "без прокси"
         lines.append(f"• #{acc.id} {quote_html(display_name)} [{status_desc}] ({proxy_desc}, инвайтов: {acc.daily_invites_count})")
 
-        p_mark = f" [P#{acc.proxy_id}]" if acc.proxy_id else ""
-        btn_label = f"{display_name}{p_mark}"
-        account_items.append((acc.id, btn_label))
+        short = (display_name[:12] + "…") if len(display_name) > 12 else display_name
+        entries.append((acc.id, _account_tag(acc, acc.id in excluded_ids, now), short))
 
     lines.append("\n<i>Нажмите на аккаунт для просмотра, настройки прокси или удаления.</i>")
 
     await safe_edit_text(
         callback.message,
         "\n".join(lines),
-        reply_markup=accounts_pagination_keyboard(offset=offset, limit=limit, total=total, account_items=account_items)
+        reply_markup=accounts_grid_keyboard(entries=entries, offset=offset, limit=limit, total=total)
     )
     await callback.answer()
 
@@ -471,6 +501,8 @@ async def callback_account_view(callback: CallbackQuery):
 
     name_display = quote_html(acc.first_name or "-")
     username_display = f"@{quote_html(acc.username)}" if acc.username else "нет"
+    excluded = acc.id in await get_excluded_worker_ids()
+    excl_desc = "исключен из задач [SKIP]" if excluded else "участвует в задачах"
 
     text = (
         f"<b>Параметры аккаунта #{acc.id}</b>\n"
@@ -479,6 +511,7 @@ async def callback_account_view(callback: CallbackQuery):
         f"• <b>Имя:</b> {name_display}\n"
         f"• <b>Юзернейм:</b> {username_display}\n"
         f"• <b>Статус:</b> <code>{status_desc}</code>\n"
+        f"• <b>В задачах:</b> <code>{excl_desc}</code>\n"
         f"• <b>Инвайтов за сегодня:</b> <code>{acc.daily_invites_count}</code>\n"
         f"• <b>Привязанный прокси:</b>\n  └ {p_desc}\n\n"
         "<blockquote>Для смены или отключения прокси используйте кнопки ниже.</blockquote>"
@@ -487,9 +520,28 @@ async def callback_account_view(callback: CallbackQuery):
     await safe_edit_text(
         callback.message,
         text,
-        reply_markup=account_view_keyboard(acc_id=acc.id, offset=offset, has_proxy=has_proxy)
+        reply_markup=account_view_keyboard(acc_id=acc.id, offset=offset, has_proxy=has_proxy, excluded=excluded)
     )
     await callback.answer()
+
+@accounts_router.callback_query(F.data.startswith("acc_excl_"))
+async def callback_account_exclude(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    try:
+        acc_id = int(parts[2])
+        offset = int(parts[3]) if len(parts) > 3 else 0
+    except (ValueError, IndexError):
+        await callback.answer("Неверный формат команды.")
+        return
+
+    excluded_ids = await get_excluded_worker_ids()
+    await set_worker_excluded(acc_id, excluded=(acc_id not in excluded_ids))
+    await callback.answer(
+        f"Аккаунт #{acc_id} исключен из задач." if acc_id not in excluded_ids
+        else f"Аккаунт #{acc_id} снова участвует в задачах."
+    )
+    callback.data = f"acc_view_{acc_id}_{offset}"
+    await callback_account_view(callback)
 
 @accounts_router.callback_query(F.data.startswith("acc_proxy_pick_"))
 async def callback_acc_proxy_pick(callback: CallbackQuery):
@@ -620,47 +672,69 @@ async def callback_purge_all_exec(callback: CallbackQuery):
 
 @accounts_router.callback_query(F.data == "acc_check_all")
 async def callback_check_all(callback: CallbackQuery):
-    status_msg = await callback.message.edit_text("Запуск проверки подключения всех аккаунтов...")
+    await safe_edit_text(callback.message, "Запуск проверки подключения всех аккаунтов...")
 
     async with async_session_factory() as session:
         accounts = (await session.execute(
             select(Account).options(selectinload(Account.proxy))
         )).scalars().all()
 
-    valid_count = 0
-    banned_count = 0
+    if not accounts:
+        await safe_edit_text(callback.message, "В пуле нет аккаунтов для проверки.", reply_markup=back_keyboard("nav_accounts"))
+        await callback.answer()
+        return
 
-    for idx, acc in enumerate(accounts, 1):
+    semaphore = asyncio.Semaphore(8)
+
+    async def probe(acc):
         client = get_telethon_client(acc, proxy=acc.proxy)
         try:
-            await client.connect()
-            if await client.is_user_authorized():
-                user = await client.get_me()
-                async with async_session_factory() as session:
-                    db_acc = await session.get(Account, acc.id)
-                    if db_acc:
-                        db_acc.status = "active"
-                        db_acc.first_name = user.first_name
-                        db_acc.username = user.username
-                        await session.commit()
-                valid_count += 1
-            else:
-                async with async_session_factory() as session:
-                    db_acc = await session.get(Account, acc.id)
-                    if db_acc:
-                        db_acc.status = "banned"
-                        await session.commit()
-                banned_count += 1
+            async with semaphore:
+                await client.connect()
+                try:
+                    if await client.is_user_authorized():
+                        user = await client.get_me()
+                        return acc.id, "active", user.first_name, user.username
+                    return acc.id, "banned", None, None
+                finally:
+                    await client.disconnect()
         except Exception:
-            banned_count += 1
-        finally:
-            await client.disconnect()
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            return acc.id, "error", None, None
 
-        if idx % 3 == 0 or idx == len(accounts):
-            await safe_edit_text(status_msg, f"Проверено {idx}/{len(accounts)} аккаунтов...\nВалидных: {valid_count}, Недоступных: {banned_count}")
+    valid_count = 0
+    banned_count = 0
+    checked = 0
+    verified = []
+    for coro in asyncio.as_completed([probe(acc) for acc in accounts]):
+        acc_id, outcome, first_name, username = await coro
+        checked += 1
+        if outcome == "active":
+            valid_count += 1
+            verified.append((acc_id, first_name, username))
+        elif outcome == "banned":
+            banned_count += 1
+            verified.append((acc_id, None, None))
+        else:
+            banned_count += 1
+        if checked % 3 == 0 or checked == len(accounts):
+            await safe_edit_text(callback.message, f"Проверено {checked}/{len(accounts)} аккаунтов...\nВалидных: {valid_count}, Недоступных: {banned_count}")
+
+    async with async_session_factory() as session:
+        for acc_id, outcome, first_name, username in verified:
+            db_acc = await session.get(Account, acc_id)
+            if db_acc:
+                db_acc.status = outcome
+                if first_name is not None:
+                    db_acc.first_name = first_name
+                    db_acc.username = username
+        await session.commit()
 
     await safe_edit_text(
-        status_msg,
+        callback.message,
         f"<b>[ИТОГ] Проверка авторизации завершена</b>\n\n"
         f"• Валидных и активных: <code>{valid_count}</code>\n"
         f"• Отозванных или недоступных: <code>{banned_count}</code>",
@@ -671,27 +745,40 @@ async def callback_check_all(callback: CallbackQuery):
 @accounts_router.callback_query(F.data == "acc_check_spambot")
 async def callback_check_spambot(callback: CallbackQuery):
     await callback.answer("Запуск проверки через @SpamBot...")
-    status_msg = await callback.message.edit_text("Запуск проверки аккаунтов через @SpamBot...")
+    await safe_edit_text(callback.message, "Запуск проверки аккаунтов через @SpamBot...")
 
     async with async_session_factory() as session:
         accounts = (await session.execute(
             select(Account).options(selectinload(Account.proxy)).where(Account.status != "banned")
         )).scalars().all()
 
+    if not accounts:
+        await safe_edit_text(callback.message, "Нет аккаунтов для проверки через @SpamBot.", reply_markup=back_keyboard("nav_accounts"))
+        return
+
+    semaphore = asyncio.Semaphore(3)
+
+    async def probe(acc):
+        async with semaphore:
+            status, _ = await check_account_spambot(acc)
+            return acc.id, status
+
     clean_count = 0
     limited_count = 0
     outcomes: dict[int, str] = {}
+    checked = 0
 
-    for idx, acc in enumerate(accounts, 1):
-        status, reason = await check_account_spambot(acc)
-        outcomes[acc.id] = status
+    for coro in asyncio.as_completed([probe(acc) for acc in accounts]):
+        account_id, status = await coro
+        outcomes[account_id] = status
+        checked += 1
         if status == "active":
             clean_count += 1
         elif status == "spambot":
             limited_count += 1
 
-        if idx % 2 == 0 or idx == len(accounts):
-            await safe_edit_text(status_msg, f"Проверено через @SpamBot {idx}/{len(accounts)}...\nЧистых: {clean_count}, Со спамблоком: {limited_count}")
+        if checked % 2 == 0 or checked == len(accounts):
+            await safe_edit_text(callback.message, f"Проверено через @SpamBot {checked}/{len(accounts)}...\nЧистых: {clean_count}, Со спамблоком: {limited_count}")
 
     async with async_session_factory() as session:
         for account_id, status in outcomes.items():
@@ -701,7 +788,7 @@ async def callback_check_spambot(callback: CallbackQuery):
         await session.commit()
 
     await safe_edit_text(
-        status_msg,
+        callback.message,
         f"<b>[ИТОГ] Проверка через @SpamBot завершена</b>\n\n"
         f"• Без ограничений (чистые): <code>{clean_count}</code>\n"
         f"• Со спамблоком: <code>{limited_count}</code>",

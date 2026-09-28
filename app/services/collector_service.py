@@ -8,6 +8,8 @@ from telethon.tl.types import (
     Channel,
     User,
     ChannelParticipantsSearch,
+    UserStatusOnline,
+    UserStatusRecently,
 )
 from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
@@ -16,10 +18,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import DATA_DIR
-from app.models.models import Account, AudienceMember, AudienceHistory
+from app.models.models import Account, AudienceMember, AudienceHistory, utc_now
 from app.telegram.client_factory import get_telethon_client
 
 ProgressCallback = Callable[[int, str, Optional[str]], Awaitable[None]]
+
+FRESH_STATUSES = (UserStatusOnline, UserStatusRecently)
 
 
 async def collect_chat_members(
@@ -186,6 +190,7 @@ async def collect_chat_members(
                 existing_skipped += 1
                 continue
 
+            seen_at = utc_now() if isinstance(getattr(tg_user, "status", None), FRESH_STATUSES) else None
             member = AudienceMember(
                 tg_id=tg_user.id,
                 access_hash=getattr(tg_user, "access_hash", None),
@@ -193,6 +198,7 @@ async def collect_chat_members(
                 first_name=tg_user.first_name,
                 last_name=tg_user.last_name,
                 source_chat=str(source_name),
+                last_seen_at=seen_at,
                 status="pending"
             )
             history_record = AudienceHistory(

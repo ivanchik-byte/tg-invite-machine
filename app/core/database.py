@@ -48,6 +48,8 @@ async def init_db() -> None:
                         conn.execute(text("ALTER TABLE accounts ADD COLUMN api_id INTEGER;"))
                     if "api_hash" not in account_cols:
                         conn.execute(text("ALTER TABLE accounts ADD COLUMN api_hash VARCHAR(64);"))
+                    if "last_attempt_at" not in account_cols:
+                        conn.execute(text("ALTER TABLE accounts ADD COLUMN last_attempt_at DATETIME;"))
                 task_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(invite_tasks)")).fetchall()]
                 if task_cols:
                     if "max_invites" not in task_cols:
@@ -60,4 +62,14 @@ async def init_db() -> None:
                 if group_cols:
                     if "chat_type" not in group_cols:
                         conn.execute(text("ALTER TABLE target_groups ADD COLUMN chat_type VARCHAR(16);"))
+                aud_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(audience_members)")).fetchall()]
+                if aud_cols:
+                    if "last_seen_at" not in aud_cols:
+                        conn.execute(text("ALTER TABLE audience_members ADD COLUMN last_seen_at DATETIME;"))
             await connection.run_sync(run_sqlite_migrations)
+        else:
+            def run_pg_migrations(conn):
+                from sqlalchemy import text
+                conn.execute(text("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMP;"))
+                conn.execute(text("ALTER TABLE audience_members ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP;"))
+            await connection.run_sync(run_pg_migrations)

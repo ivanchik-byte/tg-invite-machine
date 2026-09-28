@@ -18,8 +18,11 @@ from app.models.models import Account, AudienceMember, TargetGroup, InviteTask
 from app.core.settings_service import (
     get_daily_invite_limit,
     set_daily_invite_limit,
+    get_excluded_worker_ids,
     get_privacy_blacklist_enabled,
     set_privacy_blacklist_enabled,
+    get_recent_only_enabled,
+    set_recent_only_enabled,
     get_speed_profile,
     set_speed_profile,
 )
@@ -77,9 +80,11 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
 
     daily_limit = await get_daily_invite_limit()
     blacklist_enabled = await get_privacy_blacklist_enabled()
+    recent_only = await get_recent_only_enabled()
     current_speed = await get_speed_profile()
     speed_label = current_speed.replace("custom:", "свой: ") if current_speed.startswith("custom:") else current_speed
     bl_label = "ВКЛ (пропуск закрытых)" if blacklist_enabled else "ВЫКЛ (пробовать всех)"
+    recent_label = "ВКЛ (только недавно в сети)" if recent_only else "ВЫКЛ (все собранные)"
 
     text = (
         "<b>TG-INVITE-MACHINE | Центр управления инвайтингом</b>\n"
@@ -90,6 +95,7 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
         f"• <b>Готовых сессий:</b> <code>{active_accounts}</code> шт. (в отлежке: <code>{cooldown_accounts}</code>)\n"
         f"• <b>Суточный лимит:</b> <code>{daily_limit}</code> успешно приглашенных на акк\n"
         f"• <b>Блэклист приватности:</b> <code>{bl_label}</code>\n"
+        f"• <b>Фильтр недавних:</b> <code>{recent_label}</code>\n"
         f"• <b>Профиль скорости:</b> <code>{speed_label}</code>\n"
         f"• <b>Алгоритм пауз:</b> <code>Тримодальное распределение</code>\n\n"
         "<blockquote>При запуске бот проверит статус группы и запустит распределенный цикл с автоматической ротацией сессий при FloodWait.</blockquote>"
@@ -102,6 +108,7 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
             is_paused=is_paused,
             daily_limit=daily_limit,
             privacy_blacklist=blacklist_enabled,
+            recent_only=recent_only,
             paused_task_id=paused_task_id,
         )
     )
@@ -126,6 +133,16 @@ async def callback_invite_toggle_blacklist(callback: CallbackQuery, state: FSMCo
             await session.commit()
     status_str = "включен (пропуск закрытых профилей)" if new_val else "выключен"
     await callback.answer(f"Блэклист приватности {status_str}")
+    await callback_nav_inviter(callback, state)
+
+
+@inviter_router.callback_query(F.data == "invite_toggle_recent")
+async def callback_invite_toggle_recent(callback: CallbackQuery, state: FSMContext):
+    current = await get_recent_only_enabled()
+    new_val = not current
+    await set_recent_only_enabled(new_val)
+    status_str = "включен (только недавно в сети)" if new_val else "выключен (все собранные)"
+    await callback.answer(f"Фильтр недавних {status_str}")
     await callback_nav_inviter(callback, state)
 
 
@@ -241,8 +258,12 @@ async def callback_invite_start(callback: CallbackQuery, state: FSMContext):
         await auto_assign_proxies(session)
         await session.commit()
 
+        excluded_ids = await get_excluded_worker_ids()
+        worker_filter = [Account.is_active == True, Account.status == "active"]
+        if excluded_ids:
+            worker_filter.append(~Account.id.in_(excluded_ids))
         accounts_count = (await session.execute(
-            select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
+            select(func.count(Account.id)).where(*worker_filter)
         )).scalar_one()
         pending_members = (await session.execute(
             select(func.count(AudienceMember.id)).where(AudienceMember.status == "pending")
@@ -469,17 +490,20 @@ async def _show_pre_launch_config(
         speed_text = "Обычный (35-75с)"
 
     daily_limit = await get_daily_invite_limit()
+    recent_only = await get_recent_only_enabled()
+    recent_text = "только недавно в сети" if recent_only else "все собранные"
     text = (
         "<b>TG-INVITE-MACHINE | Параметры инвайтинга</b>\n"
         "────────────────────────\n"
         f"• <b>Цель:</b> <code>{quote_html(target_link)}</code> ({type_label})\n"
         f"• <b>Лимит на эту задачу:</b> <code>{limit_text}</code> приглашенных\n"
         f"• <b>Суточный лимит сессий:</b> <code>{daily_limit}</code> успешно добавленных на акк\n"
-        f"• <b>Режим скорости:</b> <code>{speed_text}</code>\n\n"
+        f"• <b>Режим скорости:</b> <code>{speed_text}</code>\n"
+        f"• <b>Аудитория:</b> <code>{recent_text}</code>\n\n"
         "<i>Лимиты считают только реально добавленных людей, пропуски и приватные профили лимит не тратят.</i>\n\n"
         "Настройте параметры кнопками ниже и запустите задачу:"
     )
-    keyboard = inviter_config_keyboard(selected_limit=selected_limit, current_profile=profile)
+    keyboard = inviter_config_keyboard(selected_limit=selected_limit, current_profile=profile, recent_only=recent_only)
     await safe_edit_text(message, text, reply_markup=keyboard)
 
 
@@ -571,6 +595,39 @@ async def callback_cfg_return(callback: CallbackQuery, state: FSMContext):
         speed_profile=speed_profile
     )
     await callback.answer()
+
+
+@inviter_router.callback_query(F.data == "cfg_mode_carousel")
+async def callback_cfg_mode_carousel(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await set_recent_only_enabled(True)
+    await _show_pre_launch_config(
+        callback.message,
+        state,
+        data.get("target_group_id"),
+        data.get("target_link", ""),
+        data.get("chat_type", "supergroup"),
+        selected_limit=None,
+        speed_profile="custom:120:300"
+    )
+    await callback.answer("Режим Карусель: вся очередь, паузы 2-5 мин, только недавно в сети")
+
+
+@inviter_router.callback_query(F.data == "cfg_mode_target")
+async def callback_cfg_mode_target(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await set_recent_only_enabled(False)
+    selected_limit = data.get("selected_limit") or 10
+    await _show_pre_launch_config(
+        callback.message,
+        state,
+        data.get("target_group_id"),
+        data.get("target_link", ""),
+        data.get("chat_type", "supergroup"),
+        selected_limit=selected_limit,
+        speed_profile=data.get("speed_profile") or await get_speed_profile()
+    )
+    await callback.answer("Режим Целевой план: остановка ровно на лимите успешных")
 
 
 @inviter_router.callback_query(F.data == "cfg_cancel")
