@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     MAX_INVITES_PER_SESSION_DAILY: int = Field(default=20, description="Daily limit per session")
 
     CIRCUIT_BREAKER_FLOOD_THRESHOLD: int = Field(default=3, description="Consecutive floods to trigger freeze")
+    PEER_FLOOD_COOLDOWN_HOURS: int = Field(default=12, description="Hours to cooldown an account on PeerFlood")
 
     @model_validator(mode="after")
     def validate_settings(self) -> "Settings":

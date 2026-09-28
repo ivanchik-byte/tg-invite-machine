@@ -3,7 +3,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Dict, Any, Tuple
-from sqlalchemy import select
+from datetime import datetime, timezone
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -123,3 +124,28 @@ async def import_account_bundle(
         )
     finally:
         shutil.rmtree(inspect_dir, ignore_errors=True)
+
+async def auto_recover_cooldowns(session: AsyncSession) -> int:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    result = await session.execute(
+        update(Account)
+        .where(
+            Account.status == "cooldown",
+            Account.cooldown_until.is_not(None),
+            Account.cooldown_until <= now
+        )
+        .values(status="active", cooldown_until=None)
+    )
+    if result.rowcount > 0:
+        await session.commit()
+    return result.rowcount
+
+async def reset_all_cooldowns(session: AsyncSession) -> int:
+    result = await session.execute(
+        update(Account)
+        .where(Account.status == "cooldown")
+        .values(status="active", cooldown_until=None)
+    )
+    if result.rowcount > 0:
+        await session.commit()
+    return result.rowcount

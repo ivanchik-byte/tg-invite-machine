@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings, TEMP_DIR
 from app.core.database import async_session_factory
+from datetime import datetime, timezone
 from app.core.security import safe_extract_zip, encrypt_session_string
 from app.models.models import Account, Proxy
 from app.bot.states import AccountState
@@ -19,7 +20,12 @@ from app.bot.keyboards import accounts_menu_keyboard, back_keyboard, accounts_pa
 from app.core.utils import safe_edit_text
 from app.telegram.converter import convert_tdata_archive, import_session_file, PASSWORD_REQUIRED
 from app.telegram.client_factory import get_telethon_client, decrypt_proxy_password, build_proxy_dict, ProxySecurityError
-from app.services.account_service import import_account_bundle, register_single_account
+from app.services.account_service import (
+    import_account_bundle,
+    register_single_account,
+    auto_recover_cooldowns,
+    reset_all_cooldowns,
+)
 from app.services.spambot_service import check_account_spambot
 from app.services.proxy_service import import_proxies_from_text
 from app.services.export_service import generate_accounts_excel
@@ -34,6 +40,7 @@ async def callback_nav_accounts(callback: CallbackQuery, state: FSMContext | Non
     if state is not None:
         await state.clear()
     async with async_session_factory() as session:
+        await auto_recover_cooldowns(session)
         count = (await session.execute(select(func.count(Account.id)))).scalar_one()
         active = (await session.execute(
             select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
@@ -58,8 +65,15 @@ async def callback_nav_accounts(callback: CallbackQuery, state: FSMContext | Non
         "• <code>.zip</code> - архив с папкой <code>tdata</code> Telegram Desktop\n\n"
         "<blockquote>Все сессии хранятся в зашифрованном виде (Fernet). Для TData используется QR-login с изоляцией от десктопа.</blockquote>"
     )
-    await safe_edit_text(callback.message, text, reply_markup=accounts_menu_keyboard(has_accounts=count > 0))
+    await safe_edit_text(callback.message, text, reply_markup=accounts_menu_keyboard(has_accounts=count > 0, cooldown_count=cooldown))
     await callback.answer()
+
+@accounts_router.callback_query(F.data == "acc_reset_cooldowns")
+async def callback_reset_cooldowns(callback: CallbackQuery, state: FSMContext | None = None):
+    async with async_session_factory() as session:
+        count = await reset_all_cooldowns(session)
+    await callback.answer(f"Сброшена отлежка у {count} аккаунтов. Они снова активны.", show_alert=True)
+    await callback_nav_accounts(callback, state)
 
 @accounts_router.callback_query(F.data == "acc_upload_tdata")
 async def callback_upload_tdata(callback: CallbackQuery, state: FSMContext):
@@ -349,7 +363,9 @@ async def callback_list_accounts(callback: CallbackQuery):
 
     limit = 8
 
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     async with async_session_factory() as session:
+        await auto_recover_cooldowns(session)
         accounts = (await session.execute(
             select(Account).order_by(Account.id.asc()).offset(offset).limit(limit)
         )).scalars().all()
@@ -365,7 +381,17 @@ async def callback_list_accounts(callback: CallbackQuery):
     lines = [f"Список аккаунтов (всего: {total}, стр. {page_num}/{total_pages}):\n"]
     for acc in accounts:
         display_name = acc.username and f"@{acc.username}" or acc.first_name or acc.phone
-        lines.append(f"#{acc.id} {quote_html(display_name)} [{acc.status}] (инвайтов сегодня: {acc.daily_invites_count})")
+        if acc.status == "cooldown":
+            if acc.cooldown_until and acc.cooldown_until > now:
+                rem_sec = int((acc.cooldown_until - now).total_seconds())
+                mins = rem_sec // 60
+                secs = rem_sec % 60
+                status_desc = f"отлежка еще {mins}м {secs}с" if mins > 0 else f"отлежка еще {secs}с"
+            else:
+                status_desc = "отлежка истекла"
+        else:
+            status_desc = acc.status
+        lines.append(f"#{acc.id} {quote_html(display_name)} [{status_desc}] (инвайтов сегодня: {acc.daily_invites_count})")
 
     account_items = [
         (acc.id, quote_html(acc.username and f"@{acc.username}" or acc.phone))

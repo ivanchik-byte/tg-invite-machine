@@ -18,7 +18,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
-def accounts_menu_keyboard(has_accounts: bool = True) -> InlineKeyboardMarkup:
+def accounts_menu_keyboard(has_accounts: bool = True, cooldown_count: int = 0) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="Загрузить архив TData", callback_data="acc_upload_tdata"),
@@ -29,6 +29,10 @@ def accounts_menu_keyboard(has_accounts: bool = True) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Проверить валидность", callback_data="acc_check_all"),
             InlineKeyboardButton(text="Проверить @SpamBot", callback_data="acc_check_spambot")
         )
+        if cooldown_count > 0:
+            builder.row(
+                InlineKeyboardButton(text=f"Сбросить отлежку ({cooldown_count})", callback_data="acc_reset_cooldowns")
+            )
         builder.row(
             InlineKeyboardButton(text="Выгрузить Excel (.xlsx)", callback_data="acc_export_excel"),
             InlineKeyboardButton(text="Очистить забаненные", callback_data="acc_purge_banned")

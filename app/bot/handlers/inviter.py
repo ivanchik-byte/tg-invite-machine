@@ -37,6 +37,7 @@ from app.services.inviter_service import InviterOrchestrator
 from app.services.task_manager import invite_task_manager
 from app.telegram.client_factory import get_telethon_client
 from app.core.utils import normalize_chat_identifier, safe_edit_text
+from app.services.account_service import auto_recover_cooldowns
 
 inviter_router = Router()
 
@@ -54,6 +55,7 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
     is_running = invite_task_manager.is_running() or (active_orchestrator is not None and active_task_handle is not None and not active_task_handle.done())
 
     async with async_session_factory() as session:
+        await auto_recover_cooldowns(session)
         pending_count = (await session.execute(
             select(func.count(AudienceMember.id)).where(AudienceMember.status == "pending")
         )).scalar_one()

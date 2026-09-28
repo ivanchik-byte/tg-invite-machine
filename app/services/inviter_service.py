@@ -30,6 +30,7 @@ from app.core.config import settings
 from app.core.settings_service import get_daily_invite_limit, get_privacy_blacklist_enabled
 from app.models.models import Account, AudienceMember, TargetGroup, InviteTask, AudienceHistory
 from app.telegram.client_factory import get_telethon_client
+from app.services.account_service import auto_recover_cooldowns
 
 
 logger = logging.getLogger("tg_invite_machine")
@@ -285,11 +286,7 @@ class InviterOrchestrator:
                     )
                     .values(daily_invites_count=0)
                 )
-                await session.execute(
-                    update(Account)
-                    .where(Account.status == "cooldown", Account.cooldown_until <= now)
-                    .values(status="active", cooldown_until=None)
-                )
+                await auto_recover_cooldowns(session)
                 await session.commit()
 
                 task = await session.get(InviteTask, self.task_id)
@@ -329,25 +326,73 @@ class InviterOrchestrator:
                         select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
                     )).scalar_one()
 
+                    cooldown_accounts = (await session.execute(
+                        select(func.count(Account.id)).where(Account.is_active == True, Account.status == "cooldown")
+                    )).scalar_one()
+
                     task = await session.get(InviteTask, self.task_id)
-                    if task:
-                        task.status = "completed"
-                        task.finished_at = now
-                        await session.commit()
-                    if progress_callback:
-                        if total_active > 0:
-                            msg = f"Все активные сессии достигли дневного лимита ({daily_limit} инвайтов)."
-                        else:
-                            msg = "В пуле нет активных аккаунтов для инвайтинга."
-                        await progress_callback(
-                            self.task_id,
-                            task.successful_invites if task else 0,
-                            task.total_targets if task else 0,
-                            task.flood_errors if task else 0,
-                            msg,
-                            is_final=True
-                        )
-                    break
+                    if cooldown_accounts > 0 and total_active == 0:
+                        min_cd = (await session.execute(
+                            select(func.min(Account.cooldown_until)).where(
+                                Account.is_active == True,
+                                Account.status == "cooldown",
+                                Account.cooldown_until.is_not(None)
+                            )
+                        )).scalar_one()
+
+                        wait_sec = (min_cd - now).total_seconds() if min_cd else 0
+                        # If cooldown is short (<= 180s, e.g. FloodWait), wait and resume campaign
+                        if 0 < wait_sec <= 180:
+                            if progress_callback and task:
+                                await progress_callback(
+                                    self.task_id,
+                                    task.successful_invites,
+                                    task.total_targets,
+                                    task.flood_errors,
+                                    f"Все сессии в отлежке. Ожидание окончания флуд-паузы ({int(wait_sec)} сек)...",
+                                    is_final=False
+                                )
+                            try:
+                                await asyncio.wait_for(self._stop_event.wait(), timeout=wait_sec + 2)
+                                break
+                            except asyncio.TimeoutError:
+                                continue
+
+                        # If cooldown is long (e.g. PeerFlood hours): pause task gracefully
+                        if task:
+                            task.status = "paused"
+                            await session.commit()
+                        cd_time_str = min_cd.strftime("%H:%M:%S") if min_cd else "позже"
+                        msg = f"Все сессии в отлежке (PeerFlood/FloodWait до {cd_time_str}). Задача на паузе."
+                        if progress_callback:
+                            await progress_callback(
+                                self.task_id,
+                                task.successful_invites if task else 0,
+                                task.total_targets if task else 0,
+                                task.flood_errors if task else 0,
+                                msg,
+                                is_final=True
+                            )
+                        break
+                    else:
+                        if task:
+                            task.status = "completed"
+                            task.finished_at = now
+                            await session.commit()
+                        if progress_callback:
+                            if total_active > 0:
+                                msg = f"Все активные сессии достигли дневного лимита ({daily_limit} инвайтов)."
+                            else:
+                                msg = "В пуле нет активных аккаунтов для инвайтинга."
+                            await progress_callback(
+                                self.task_id,
+                                task.successful_invites if task else 0,
+                                task.total_targets if task else 0,
+                                task.flood_errors if task else 0,
+                                msg,
+                                is_final=True
+                            )
+                        break
 
 
                 blacklist_enabled = await get_privacy_blacklist_enabled()
@@ -489,7 +534,8 @@ class InviterOrchestrator:
                 async with session_factory() as session:
                     db_acc = await session.get(Account, account_id)
                     if db_acc:
-                        db_acc.cooldown_until = now + timedelta(seconds=flood.seconds + 60)
+                        db_acc.status = "cooldown"
+                        db_acc.cooldown_until = now + timedelta(seconds=flood.seconds + 30)
                         db_acc.flood_incidents += 1
                         await session.commit()
             except PeerFloodError:
@@ -500,7 +546,7 @@ class InviterOrchestrator:
                     db_acc = await session.get(Account, account_id)
                     if db_acc:
                         db_acc.status = "cooldown"
-                        db_acc.cooldown_until = now + timedelta(minutes=5)
+                        db_acc.cooldown_until = now + timedelta(hours=settings.PEER_FLOOD_COOLDOWN_HOURS)
                         db_acc.flood_incidents += 1
                         await session.commit()
 

@@ -9,7 +9,9 @@ from app.core.settings_service import (
     get_speed_profile,
     set_speed_profile,
 )
+from datetime import datetime, timedelta, timezone
 from app.services.inviter_service import InviterOrchestrator, calculate_delay
+from app.services.account_service import auto_recover_cooldowns, reset_all_cooldowns
 from telethon.errors import UserChannelsTooMuchError
 
 @pytest.mark.asyncio
@@ -205,4 +207,68 @@ def test_calculate_delay_presets():
     assert calculate_delay("cautious") > 0
     assert calculate_delay("normal") > 0
     assert calculate_delay("fast") > 0
+
+@pytest.mark.asyncio
+async def test_auto_recover_cooldowns():
+    test_phone = "99900011122"
+    async with async_session_factory() as session:
+        await session.execute(delete(Account).where(Account.phone == test_phone))
+        await session.commit()
+
+        past_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=5)
+        acc = Account(
+            phone=test_phone,
+            session_encrypted="enc",
+            status="cooldown",
+            cooldown_until=past_time,
+            is_active=True
+        )
+        session.add(acc)
+        await session.commit()
+
+        recovered = await auto_recover_cooldowns(session)
+        assert recovered >= 1
+
+        db_acc = (await session.execute(select(Account).where(Account.phone == test_phone))).scalar_one()
+        assert db_acc.status == "active"
+        assert db_acc.cooldown_until is None
+
+        await session.execute(delete(Account).where(Account.phone == test_phone))
+        await session.commit()
+
+@pytest.mark.asyncio
+async def test_reset_all_cooldowns():
+    test_phone = "99900011133"
+    async with async_session_factory() as session:
+        await session.execute(delete(Account).where(Account.phone == test_phone))
+        await session.commit()
+
+        future_time = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=5)
+        acc = Account(
+            phone=test_phone,
+            session_encrypted="enc",
+            status="cooldown",
+            cooldown_until=future_time,
+            is_active=True
+        )
+        session.add(acc)
+        await session.commit()
+
+        # auto_recover should NOT touch it because future
+        rec = await auto_recover_cooldowns(session)
+        # Verify our specific test account is still in cooldown
+        db_acc = (await session.execute(select(Account).where(Account.phone == test_phone))).scalar_one()
+        assert db_acc.status == "cooldown"
+
+        # manual reset should touch it
+        res = await reset_all_cooldowns(session)
+        assert res >= 1
+
+        db_acc = (await session.execute(select(Account).where(Account.phone == test_phone))).scalar_one()
+        assert db_acc.status == "active"
+        assert db_acc.cooldown_until is None
+
+        await session.execute(delete(Account).where(Account.phone == test_phone))
+        await session.commit()
+
 

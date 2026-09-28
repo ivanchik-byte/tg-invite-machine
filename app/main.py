@@ -23,6 +23,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger("tg_invite_machine")
 
+async def cooldown_watcher():
+    from app.core.database import async_session_factory
+    from app.services.account_service import auto_recover_cooldowns
+    while True:
+        try:
+            await asyncio.sleep(30)
+            async with async_session_factory() as session:
+                recovered = await auto_recover_cooldowns(session)
+                if recovered > 0:
+                    logger.info("Фоновый воркер: восстановлено %d аккаунтов из отлежки", recovered)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.debug("cooldown_watcher error: %s", exc)
+
 async def main():
     if not settings.BOT_TOKEN:
         logger.error("BOT_TOKEN не задан. Укажите токен бота в файле .env")
@@ -48,6 +63,7 @@ async def main():
     dp.include_router(inviter_router)
 
     logger.info("Бот запущен и ожидает обновлений...")
+    cooldown_task = asyncio.create_task(cooldown_watcher())
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         try:
@@ -62,6 +78,11 @@ async def main():
             logger.warning("Не удалось зарегистрировать команды бота: %s", exc)
         await dp.start_polling(bot)
     finally:
+        cooldown_task.cancel()
+        try:
+            await cooldown_task
+        except asyncio.CancelledError:
+            pass
         await bot.session.close()
         await engine.dispose()
 

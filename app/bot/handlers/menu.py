@@ -14,6 +14,7 @@ from app.models.models import Account, Proxy, AudienceMember, InviteTask
 from app.bot.keyboards import main_menu_keyboard
 from app.core.utils import safe_edit_text
 from app.services.task_manager import invite_task_manager
+from app.services.account_service import auto_recover_cooldowns
 
 menu_router = Router()
 
@@ -29,6 +30,7 @@ def render_progress_bar(current: int, total: int, length: int = 10) -> str:
 
 async def build_main_dashboard_text() -> str:
     async with async_session_factory() as session:
+        await auto_recover_cooldowns(session)
         total_accounts = (await session.execute(select(func.count(Account.id)))).scalar_one()
         active_accounts = (await session.execute(
             select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
@@ -124,6 +126,7 @@ async def build_main_dashboard_text() -> str:
 
 async def build_stats_text() -> str:
     async with async_session_factory() as session:
+        await auto_recover_cooldowns(session)
         total_accounts = (await session.execute(select(func.count(Account.id)))).scalar_one()
         active_accounts = (await session.execute(
             select(func.count(Account.id)).where(Account.is_active == True, Account.status == "active")
