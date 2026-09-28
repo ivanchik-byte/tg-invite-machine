@@ -288,6 +288,8 @@ async def handle_target_group(message: Message, state: FSMContext, bot: Bot):
     clean_username = normalize_chat_identifier(target_link)
     status_msg = await message.answer("Проверяю тип цели...")
 
+    target_entity = None
+    resolve_error = None
     async with async_session_factory() as session:
         probe = (await session.execute(
             select(Account).options(selectinload(Account.proxy)).where(
@@ -300,24 +302,22 @@ async def handle_target_group(message: Message, state: FSMContext, bot: Bot):
                 "Нет доступных аккаунтов для проверки цели.",
                 reply_markup=back_keyboard("nav_inviter"))
             return
-        probe_id = probe.id
 
-    async with async_session_factory() as session:
-        worker = await session.get(Account, probe_id)
-
-        client = get_telethon_client(worker, proxy=worker.proxy)
+        client = get_telethon_client(probe, proxy=probe.proxy)
         try:
             await client.connect()
             target_entity = await client.get_entity(clean_username)
-        except Exception:
+        except Exception as exc:
+            resolve_error = str(exc)
             target_entity = None
         finally:
             await client.disconnect()
 
     if target_entity is None:
         await state.clear()
+        err_hint = f"\nПричина: <code>{quote_html(resolve_error)}</code>" if resolve_error else ""
         await status_msg.edit_text(
-            "Не нашел такой канал или группу. Проверь ссылку и права аккаунтов.",
+            f"Не нашел такой канал или группу. Проверь ссылку и права аккаунтов.{err_hint}",
             reply_markup=back_keyboard("nav_inviter"))
         return
     if isinstance(target_entity, Channel):
@@ -396,11 +396,6 @@ async def callback_migrate_confirm(callback: CallbackQuery, state: FSMContext, b
                 reply_markup=back_keyboard("nav_inviter"))
             await callback.answer()
             return
-        worker_id = worker.id
-
-    async with async_session_factory() as session:
-        worker = await session.get(Account, worker_id)
-        target_group = await session.get(TargetGroup, target_group_id)
 
         client = get_telethon_client(worker, proxy=worker.proxy)
         try:

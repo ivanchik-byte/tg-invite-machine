@@ -4,7 +4,7 @@ import socket
 from datetime import datetime, timezone
 from typing import List, Tuple, Optional
 from urllib.parse import urlparse, unquote
-from sqlalchemy import select, and_, or_
+from sqlalchemy import select, and_, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Proxy
@@ -203,3 +203,72 @@ async def import_proxies_from_text(session: AsyncSession, raw_text: str) -> Tupl
 
     await session.commit()
     return added_count, skipped_count
+
+async def delete_single_proxy(session: AsyncSession, proxy_id: int) -> bool:
+    from app.models.models import Account
+    proxy = await session.get(Proxy, proxy_id)
+    if not proxy:
+        return False
+    await session.execute(
+        update(Account).where(Account.proxy_id == proxy_id).values(proxy_id=None)
+    )
+    await session.delete(proxy)
+    await session.commit()
+    return True
+
+async def purge_dead_proxies(session: AsyncSession) -> int:
+    from app.models.models import Account
+    dead_proxies = (await session.execute(
+        select(Proxy).where(Proxy.is_active == False)
+    )).scalars().all()
+    if not dead_proxies:
+        return 0
+    dead_ids = [p.id for p in dead_proxies]
+    await session.execute(
+        update(Account).where(Account.proxy_id.in_(dead_ids)).values(proxy_id=None)
+    )
+    for p in dead_proxies:
+        await session.delete(p)
+    await session.commit()
+    return len(dead_proxies)
+
+async def purge_all_proxies(session: AsyncSession) -> int:
+    from app.models.models import Account
+    all_proxies = (await session.execute(select(Proxy))).scalars().all()
+    if not all_proxies:
+        return 0
+    await session.execute(
+        update(Account).where(Account.proxy_id.is_not(None)).values(proxy_id=None)
+    )
+    for p in all_proxies:
+        await session.delete(p)
+    await session.commit()
+    return len(all_proxies)
+
+async def bind_proxy_to_account(session: AsyncSession, proxy_id: int, account_id: int) -> bool:
+    from app.models.models import Account
+    account = await session.get(Account, account_id)
+    proxy = await session.get(Proxy, proxy_id)
+    if not account or not proxy:
+        return False
+    account.proxy_id = proxy_id
+    await session.commit()
+    return True
+
+async def unbind_proxy_from_account(session: AsyncSession, account_id: int) -> bool:
+    from app.models.models import Account
+    account = await session.get(Account, account_id)
+    if not account:
+        return False
+    account.proxy_id = None
+    await session.commit()
+    return True
+
+async def unbind_all_from_proxy(session: AsyncSession, proxy_id: int) -> int:
+    from app.models.models import Account
+    result = await session.execute(
+        update(Account).where(Account.proxy_id == proxy_id).values(proxy_id=None)
+    )
+    await session.commit()
+    return result.rowcount
+

@@ -29,7 +29,7 @@ class Proxy(Base):
     last_error: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
-    accounts: Mapped[List["Account"]] = relationship("Account", back_populates="proxy")
+    accounts: Mapped[List["Account"]] = relationship("Account", back_populates="proxy", lazy="selectin")
 
     @property
     def url(self) -> str:
@@ -50,7 +50,7 @@ class Account(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     proxy_id: Mapped[Optional[int]] = mapped_column(ForeignKey("proxies.id", ondelete="SET NULL"), nullable=True)
-    proxy: Mapped[Optional[Proxy]] = relationship("Proxy", back_populates="accounts")
+    proxy: Mapped[Optional[Proxy]] = relationship("Proxy", back_populates="accounts", lazy="selectin")
 
     two_fa_password: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     api_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

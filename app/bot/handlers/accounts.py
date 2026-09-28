@@ -17,7 +17,13 @@ from datetime import datetime, timezone
 from app.core.security import safe_extract_zip, encrypt_session_string
 from app.models.models import Account, Proxy
 from app.bot.states import AccountState
-from app.bot.keyboards import accounts_menu_keyboard, back_keyboard, accounts_pagination_keyboard
+from app.bot.keyboards import (
+    accounts_menu_keyboard,
+    back_keyboard,
+    accounts_pagination_keyboard,
+    account_view_keyboard,
+    account_proxy_pick_keyboard,
+)
 from app.core.utils import safe_edit_text
 from app.telegram.converter import convert_tdata_archive, import_session_file, PASSWORD_REQUIRED
 from app.telegram.client_factory import get_telethon_client, decrypt_proxy_password, build_proxy_dict, ProxySecurityError
@@ -28,7 +34,11 @@ from app.services.account_service import (
     reset_all_cooldowns,
 )
 from app.services.spambot_service import check_account_spambot
-from app.services.proxy_service import import_proxies_from_text
+from app.services.proxy_service import (
+    import_proxies_from_text,
+    bind_proxy_to_account,
+    unbind_proxy_from_account,
+)
 from app.services.export_service import generate_accounts_excel
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB Telegram Bot API hard limit for getFile
@@ -368,9 +378,16 @@ async def callback_list_accounts(callback: CallbackQuery):
     async with async_session_factory() as session:
         await auto_recover_cooldowns(session)
         accounts = (await session.execute(
-            select(Account).order_by(Account.id.asc()).offset(offset).limit(limit)
+            select(Account).options(selectinload(Account.proxy)).order_by(Account.id.asc()).offset(offset).limit(limit)
         )).scalars().all()
         total = (await session.execute(select(func.count(Account.id)))).scalar_one()
+
+    if not accounts and offset > 0:
+        offset = max(0, offset - limit)
+        async with async_session_factory() as session:
+            accounts = (await session.execute(
+                select(Account).options(selectinload(Account.proxy)).order_by(Account.id.asc()).offset(offset).limit(limit)
+            )).scalars().all()
 
     if not accounts:
         await safe_edit_text(callback.message, "Аккаунты не найдены.", reply_markup=back_keyboard("nav_accounts"))
@@ -379,7 +396,8 @@ async def callback_list_accounts(callback: CallbackQuery):
 
     page_num = (offset // limit) + 1
     total_pages = max(1, (total + limit - 1) // limit)
-    lines = [f"Список аккаунтов (всего: {total}, стр. {page_num}/{total_pages}):\n"]
+    lines = [f"<b>Список аккаунтов</b> (всего: {total}, стр. {page_num}/{total_pages}):\n"]
+    account_items = []
     for acc in accounts:
         display_name = acc.username and f"@{acc.username}" or acc.first_name or acc.phone
         if acc.status == "cooldown":
@@ -392,18 +410,166 @@ async def callback_list_accounts(callback: CallbackQuery):
                 status_desc = "отлежка истекла"
         else:
             status_desc = acc.status
-        lines.append(f"#{acc.id} {quote_html(display_name)} [{status_desc}] (инвайтов сегодня: {acc.daily_invites_count})")
 
-    account_items = [
-        (acc.id, quote_html(acc.username and f"@{acc.username}" or acc.phone))
-        for acc in accounts
-    ]
+        proxy_desc = f"прокси #{acc.proxy_id}" if acc.proxy_id else "без прокси"
+        lines.append(f"• #{acc.id} {quote_html(display_name)} [{status_desc}] ({proxy_desc}, инвайтов: {acc.daily_invites_count})")
+
+        p_mark = f" [P#{acc.proxy_id}]" if acc.proxy_id else ""
+        btn_label = f"{display_name}{p_mark}"
+        account_items.append((acc.id, btn_label))
+
+    lines.append("\n<i>Нажмите на аккаунт для просмотра, настройки прокси или удаления.</i>")
+
     await safe_edit_text(
         callback.message,
         "\n".join(lines),
         reply_markup=accounts_pagination_keyboard(offset=offset, limit=limit, total=total, account_items=account_items)
     )
     await callback.answer()
+
+@accounts_router.callback_query(F.data.startswith("acc_view_"))
+async def callback_account_view(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    try:
+        acc_id = int(parts[2])
+        offset = int(parts[3]) if len(parts) > 3 else 0
+    except (ValueError, IndexError):
+        await callback.answer("Неверный формат команды.")
+        return
+
+    async with async_session_factory() as session:
+        await auto_recover_cooldowns(session)
+        acc = (await session.execute(
+            select(Account).options(selectinload(Account.proxy)).where(Account.id == acc_id)
+        )).scalars().first()
+
+    if not acc:
+        await callback.answer("Аккаунт не найден.", show_alert=True)
+        callback.data = f"acc_list_{offset}"
+        await callback_list_accounts(callback)
+        return
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if acc.status == "cooldown":
+        if acc.cooldown_until and acc.cooldown_until > now:
+            rem_sec = int((acc.cooldown_until - now).total_seconds())
+            mins = rem_sec // 60
+            secs = rem_sec % 60
+            status_desc = f"отлежка еще {mins}м {secs}с" if mins > 0 else f"отлежка еще {secs}с"
+        else:
+            status_desc = "отлежка истекла"
+    else:
+        status_desc = acc.status
+
+    if acc.proxy:
+        p_status = "[OK] Активен" if acc.proxy.is_active else "[ОШИБКА] Недоступен"
+        p_desc = f"<code>#{acc.proxy.id} {acc.proxy.protocol}://{acc.proxy.host}:{acc.proxy.port}</code> ({p_status})"
+        has_proxy = True
+    else:
+        p_desc = "<code>Не привязан (прямое подключение)</code>"
+        has_proxy = False
+
+    name_display = quote_html(acc.first_name or "-")
+    username_display = f"@{quote_html(acc.username)}" if acc.username else "нет"
+
+    text = (
+        f"<b>Параметры аккаунта #{acc.id}</b>\n"
+        "────────────────────────\n"
+        f"• <b>Телефон:</b> <code>{quote_html(acc.phone)}</code>\n"
+        f"• <b>Имя:</b> {name_display}\n"
+        f"• <b>Юзернейм:</b> {username_display}\n"
+        f"• <b>Статус:</b> <code>{status_desc}</code>\n"
+        f"• <b>Инвайтов за сегодня:</b> <code>{acc.daily_invites_count}</code>\n"
+        f"• <b>Привязанный прокси:</b>\n  └ {p_desc}\n\n"
+        "<blockquote>Для смены или отключения прокси используйте кнопки ниже.</blockquote>"
+    )
+
+    await safe_edit_text(
+        callback.message,
+        text,
+        reply_markup=account_view_keyboard(acc_id=acc.id, offset=offset, has_proxy=has_proxy)
+    )
+    await callback.answer()
+
+@accounts_router.callback_query(F.data.startswith("acc_proxy_pick_"))
+async def callback_acc_proxy_pick(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    try:
+        acc_id = int(parts[3])
+        offset = int(parts[4]) if len(parts) > 4 else 0
+    except (ValueError, IndexError):
+        await callback.answer("Неверный формат команды.")
+        return
+
+    async with async_session_factory() as session:
+        proxies = (await session.execute(
+            select(Proxy).options(selectinload(Proxy.accounts)).order_by(Proxy.is_active.desc(), Proxy.id.asc())
+        )).scalars().all()
+
+    if not proxies:
+        await callback.answer("В базе нет добавленных прокси. Добавьте их в меню Прокси.", show_alert=True)
+        return
+
+    items = []
+    for p in proxies:
+        status_tag = "[OK]" if p.is_active else "[ERR]"
+        acc_count = len(p.accounts)
+        label = f"#{p.id} {status_tag} {p.host}:{p.port} ({acc_count} акк)"
+        items.append((p.id, label))
+
+    text = (
+        f"<b>Выбор прокси для аккаунта #{acc_id}</b>\n\n"
+        "Выберите прокси из списка доступных в пуле:"
+    )
+    await safe_edit_text(
+        callback.message,
+        text,
+        reply_markup=account_proxy_pick_keyboard(acc_id=acc_id, offset=offset, proxies=items)
+    )
+    await callback.answer()
+
+@accounts_router.callback_query(F.data.startswith("acc_proxy_apply_"))
+async def callback_acc_proxy_apply(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    try:
+        acc_id = int(parts[3])
+        proxy_id = int(parts[4])
+        offset = int(parts[5]) if len(parts) > 5 else 0
+    except (ValueError, IndexError):
+        await callback.answer("Неверный формат команды.")
+        return
+
+    async with async_session_factory() as session:
+        success = await bind_proxy_to_account(session, proxy_id=proxy_id, account_id=acc_id)
+
+    if success:
+        await callback.answer(f"Прокси #{proxy_id} привязан к аккаунту #{acc_id}.", show_alert=True)
+    else:
+        await callback.answer("Ошибка привязки прокси.", show_alert=True)
+
+    callback.data = f"acc_view_{acc_id}_{offset}"
+    await callback_account_view(callback)
+
+@accounts_router.callback_query(F.data.startswith("acc_proxy_detach_"))
+async def callback_acc_proxy_detach(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    try:
+        acc_id = int(parts[3])
+        offset = int(parts[4]) if len(parts) > 4 else 0
+    except (ValueError, IndexError):
+        await callback.answer("Неверный формат команды.")
+        return
+
+    async with async_session_factory() as session:
+        success = await unbind_proxy_from_account(session, account_id=acc_id)
+
+    if success:
+        await callback.answer("Прокси успешно отвязан от аккаунта.", show_alert=True)
+    else:
+        await callback.answer("Аккаунт не найден.", show_alert=True)
+
+    callback.data = f"acc_view_{acc_id}_{offset}"
+    await callback_account_view(callback)
 
 @accounts_router.callback_query(F.data.startswith("acc_del_"))
 async def callback_delete_account(callback: CallbackQuery):
@@ -422,6 +588,7 @@ async def callback_delete_account(callback: CallbackQuery):
     await callback.answer(f"Аккаунт #{acc_id} удален.")
     callback.data = f"acc_list_{offset}"
     await callback_list_accounts(callback)
+
 
 @accounts_router.callback_query(F.data == "acc_purge_all_confirm")
 async def callback_purge_all_confirm(callback: CallbackQuery):

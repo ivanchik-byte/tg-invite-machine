@@ -323,6 +323,165 @@ async def test_peer_flood_leaves_member_pending():
         await session.execute(delete(AudienceMember).where(AudienceMember.tg_id == test_uid))
         await session.commit()
 
+@pytest.mark.asyncio
+async def test_proxy_deletion_and_binding():
+    from app.models.models import Proxy, Account
+    from app.services.proxy_service import (
+        bind_proxy_to_account,
+        unbind_proxy_from_account,
+        delete_single_proxy,
+    )
+
+    test_phone = "99988877701"
+    async with async_session_factory() as session:
+        # Cleanup
+        await session.execute(delete(Account).where(Account.phone == test_phone))
+        await session.commit()
+
+        proxy = Proxy(
+            host="1.2.3.4",
+            port=1080,
+            protocol="socks5",
+            is_active=True
+        )
+        session.add(proxy)
+        await session.flush()
+
+        acc = Account(
+            phone=test_phone,
+            session_encrypted="enc",
+            status="active"
+        )
+        session.add(acc)
+        await session.commit()
+
+        proxy_id = proxy.id
+        acc_id = acc.id
+
+        # Test binding
+        bound = await bind_proxy_to_account(session, proxy_id=proxy_id, account_id=acc_id)
+        assert bound is True
+
+        db_acc = await session.get(Account, acc_id)
+        assert db_acc.proxy_id == proxy_id
+
+        # Test unbinding
+        unbound = await unbind_proxy_from_account(session, account_id=acc_id)
+        assert unbound is True
+
+        db_acc = await session.get(Account, acc_id)
+        assert db_acc.proxy_id is None
+
+        # Rebind and delete proxy
+        await bind_proxy_to_account(session, proxy_id=proxy_id, account_id=acc_id)
+        deleted = await delete_single_proxy(session, proxy_id=proxy_id)
+        assert deleted is True
+
+        db_proxy = await session.get(Proxy, proxy_id)
+        assert db_proxy is None
+
+        db_acc = await session.get(Account, acc_id)
+        assert db_acc.proxy_id is None
+
+        # Final cleanup
+        await session.delete(db_acc)
+        await session.commit()
+
+@pytest.mark.asyncio
+async def test_purge_dead_proxies():
+    from app.models.models import Proxy, Account
+    from app.services.proxy_service import purge_dead_proxies
+
+    test_phone = "99988877702"
+    async with async_session_factory() as session:
+        # Cleanup
+        await session.execute(delete(Account).where(Account.phone == test_phone))
+        await session.commit()
+
+        p_live = Proxy(host="10.0.0.1", port=1080, protocol="socks5", is_active=True)
+        p_dead = Proxy(host="10.0.0.2", port=1080, protocol="socks5", is_active=False)
+        session.add_all([p_live, p_dead])
+        await session.flush()
+
+        acc = Account(
+            phone=test_phone,
+            session_encrypted="enc",
+            status="active",
+            proxy_id=p_dead.id
+        )
+        session.add(acc)
+        await session.commit()
+
+        live_id = p_live.id
+        dead_id = p_dead.id
+        acc_id = acc.id
+
+        purged_count = await purge_dead_proxies(session)
+        assert purged_count >= 1
+
+        # Check dead proxy was deleted
+        assert await session.get(Proxy, dead_id) is None
+        # Check live proxy is still intact
+        assert await session.get(Proxy, live_id) is not None
+        # Check account was unlinked from dead proxy
+        db_acc = await session.get(Account, acc_id)
+        assert db_acc.proxy_id is None
+
+        # Cleanup
+        await session.delete(await session.get(Proxy, live_id))
+        await session.delete(db_acc)
+        await session.commit()
+
+def test_proxy_and_account_keyboards():
+    from app.bot.keyboards import (
+        proxies_menu_keyboard,
+        proxy_pagination_keyboard,
+        proxy_view_keyboard,
+        account_view_keyboard,
+        account_proxy_pick_keyboard,
+    )
+
+    # proxies_menu_keyboard with dead proxies
+    kb = proxies_menu_keyboard(has_proxies=True, dead_count=3)
+    callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+    assert "proxy_list_0" in callbacks
+    assert "proxy_purge_dead_confirm" in callbacks
+    assert "proxy_purge_all_confirm" in callbacks
+
+    # proxies_menu_keyboard without proxies
+    kb_empty = proxies_menu_keyboard(has_proxies=False, dead_count=0)
+    cb_empty = [btn.callback_data for row in kb_empty.inline_keyboard for btn in row]
+    assert "proxy_list_0" not in cb_empty
+    assert "proxy_purge_dead_confirm" not in cb_empty
+
+    # proxy_pagination_keyboard
+    items = [(1, "#1 [OK] 1.2.3.4:1080 (1 акк)")]
+    kb_pag = proxy_pagination_keyboard(offset=0, limit=8, total=10, proxy_items=items)
+    cb_pag = [btn.callback_data for row in kb_pag.inline_keyboard for btn in row]
+    assert "proxy_view_1_0" in cb_pag
+    assert "proxy_list_8" in cb_pag
+
+    # proxy_view_keyboard
+    kb_view = proxy_view_keyboard(proxy_id=1, offset=0, has_accounts=True)
+    cb_view = [btn.callback_data for row in kb_view.inline_keyboard for btn in row]
+    assert "proxy_bind_pick_1_0" in cb_view
+    assert "proxy_unbind_1_0" in cb_view
+    assert "proxy_del_1_0" in cb_view
+    assert "proxy_probe_1_0" in cb_view
+
+    # account_view_keyboard
+    kb_acc = account_view_keyboard(acc_id=5, offset=0, has_proxy=True)
+    cb_acc = [btn.callback_data for row in kb_acc.inline_keyboard for btn in row]
+    assert "acc_proxy_pick_5_0" in cb_acc
+    assert "acc_proxy_detach_5_0" in cb_acc
+    assert "acc_del_5_0" in cb_acc
+
+    # account_proxy_pick_keyboard
+    kb_pick = account_proxy_pick_keyboard(acc_id=5, offset=0, proxies=[(1, "#1 [OK] 1.2.3.4:1080")])
+    cb_pick = [btn.callback_data for row in kb_pick.inline_keyboard for btn in row]
+    assert "acc_proxy_apply_5_1_0" in cb_pick
+
+
 
 
 
