@@ -34,6 +34,7 @@ def safe_extract_zip(archive_path: Path, destination_dir: Path, max_uncompressed
         if len(entries) > max_files:
             raise zipfile.BadZipFile("Archive contains too many files")
         for entry in entries:
+            # S_IFLNK: forbid symlinks pointing outside target directory
             if (entry.external_attr >> 16) & 0o120000 == 0o120000:
                 raise zipfile.BadZipFile("Archive contains symlinks which are forbidden")
 

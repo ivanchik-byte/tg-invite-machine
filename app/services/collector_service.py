@@ -50,7 +50,7 @@ async def collect_chat_members(
             else:
                 raise ValueError("Указанный канал не имеет открытой группы обсуждений для сбора участников")
 
-        # Автоматический вход аккаунта в группу если он еще не состоит
+        # join if not already a member so iter_participants works
         if isinstance(chat_entity, Channel) and not getattr(chat_entity, "left", False) and getattr(chat_entity, "participant", None) is None:
             try:
                 await client(JoinChannelRequest(chat_entity))
@@ -166,7 +166,7 @@ async def collect_chat_members(
             )
             existing_usernames.update(q4.scalars().all())
 
-        # Reactivate any previously deferred members found in collected chat
+        # reactivate deferred members if they re-appeared in donor chat
         for i in range(0, len(user_ids), 500):
             chunk_ids = user_ids[i:i + 500]
             await session.execute(

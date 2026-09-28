@@ -39,6 +39,7 @@ class InviteTaskManager:
             self.active_task_id = None
             self.active_orchestrator = None
             self.active_task_handle = None
+            # interrupt active loop if currently suspended in asyncio.sleep
             if handle and not handle.done():
                 handle.cancel()
             return True

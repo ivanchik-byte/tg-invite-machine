@@ -210,7 +210,6 @@ async def execute_parsing(message: Message, state: FSMContext, chat_identifier: 
                 caption=f"<b>[ВЫГРУЗКА] Результаты сбора аудитории</b>\n• Источник: <code>{quote_html(chat_identifier)}</code>\n• Добавлено в базу: <code>{new_added}</code> чел."
             )
 
-        # Отправляем сообщение главного экрана (/start)
         dashboard_text = await build_main_dashboard_text()
         await message.answer(dashboard_text, reply_markup=main_menu_keyboard())
 
@@ -245,6 +244,7 @@ async def callback_parse_export(callback: CallbackQuery):
     export_path.parent.mkdir(parents=True, exist_ok=True)
 
     written = 0
+    # stream export in chunks to keep memory footprint bounded
     with open(export_path, "w", encoding="utf-8") as out:
         offset = 0
         while True:

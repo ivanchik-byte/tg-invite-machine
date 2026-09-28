@@ -124,6 +124,7 @@ async def convert_tdata_archive(
                 "username": getattr(user, "username", None),
                 "session_encrypted": encrypted_token,
                 "two_fa_password": password,
+                # bind project api_id/hash rather than desktop defaults (2040) to prevent cross-session collision
                 "api_id": settings.TELEGRAM_API_ID,
                 "api_hash": settings.TELEGRAM_API_HASH
             }

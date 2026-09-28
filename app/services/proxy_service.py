@@ -50,6 +50,7 @@ def parse_proxy_line(raw_line: str) -> Optional[Tuple[str, int, Optional[str], O
             return None
         return host, port, username, password, protocol
 
+    # rsplit from right extracts port/user/pass while keeping host intact
     parts = line.rsplit(":", 3)
     try:
         if len(parts) == 2:
@@ -63,6 +64,7 @@ def parse_proxy_line(raw_line: str) -> Optional[Tuple[str, int, Optional[str], O
     except ValueError:
         return None
 
+    # bracketed ipv6 endpoints: [2001:db8::1]:1080:user:pass
     if line.startswith("[") and "]:" in line:
         try:
             host_end = line.index("]:")
@@ -98,6 +100,7 @@ async def check_proxy_reachability(
             s.set_proxy(ptype, host, port, username=username, password=password)
             s.settimeout(timeout_seconds)
             try:
+                # tg dc2 endpoint: verifies direct route to tg edge servers
                 s.connect(("149.154.175.54", 443))
                 return True, None
             except Exception as exc:
@@ -171,6 +174,7 @@ async def import_proxies_from_text(session: AsyncSession, raw_text: str) -> Tupl
         key = (host, port, protocol, username)
         known = existing_by_endpoint.get(key)
         if known:
+            # fernet uses random iv per encrypt, so decrypt to check if password actually changed
             stored_password = None
             if known.password:
                 try:

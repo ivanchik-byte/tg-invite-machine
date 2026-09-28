@@ -552,6 +552,7 @@ async def callback_export_excel(callback: CallbackQuery):
         await callback.answer("В базе нет аккаунтов для выгрузки.", show_alert=True)
         return
 
+    # offload openpyxl zip packaging to worker thread to prevent event loop stalls
     excel_file = await asyncio.to_thread(generate_accounts_excel, accounts)
     await callback.message.answer_document(
         document=excel_file,

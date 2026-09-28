@@ -52,7 +52,7 @@ def calculate_delay(speed_profile: str) -> float:
             min_pause, max_pause = base_min, base_max
         if max_pause <= 0.0:
             return 0.0
-        # When user explicitly sets custom interval, strictly respect their exact range!
+        # custom interval bypasses trimodal jitter to respect user range exactly
         return random.uniform(min_pause, max_pause)
     else:
         profile_bounds = {
@@ -256,6 +256,7 @@ class InviterOrchestrator:
                 break
 
             now = datetime.now(timezone.utc).replace(tzinfo=None)
+            # rolling 30m window so old flood incidents expire and don't trip breaker
             if (now - circuit_breaker_window_start).total_seconds() > 1800:
                 circuit_breaker_floods = 0
                 circuit_breaker_window_start = now
@@ -586,6 +587,7 @@ class InviterOrchestrator:
                 db_account = await session.get(Account, account_id)
 
                 if invite_success:
+                    # reset consecutive flood counter on first successful invite
                     circuit_breaker_floods = 0
                     if db_member:
                         db_member.status = "invited"
@@ -607,8 +609,7 @@ class InviterOrchestrator:
                 else:
                     if db_member:
                         if error_status in ("account_banned", "flood_wait", "peer_flood", "no_rights"):
-                            # Account-side restriction or flood. Target user was never invited.
-                            # DO NOT remove or defer the user from the queue; keep them pending.
+                            # target was never invited due to account-side ban/flood; keep pending for next batch
                             db_member.status = "pending"
                             db_member.reason = None
                         else:
@@ -617,7 +618,7 @@ class InviterOrchestrator:
                             if db_member.tg_id:
                                 hist = (await session.execute(
                                     select(AudienceHistory).where(AudienceHistory.tg_id == db_member.tg_id)
-                                )).scalars().first()
+                                )) .scalars().first()
                                 if hist:
                                     hist.status = db_member.status
                                 else:
@@ -634,10 +635,10 @@ class InviterOrchestrator:
                         elif error_status in ("flood_wait", "peer_flood"):
                             task.flood_errors += 1
 
-
                 try:
                     await session.commit()
                 except asyncio.CancelledError:
+                    # rollback uncommitted state when task cancellation interrupts the iteration
                     await session.rollback()
                     raise
 

@@ -100,6 +100,7 @@ async def callback_proxy_check(callback: CallbackQuery):
         await callback.answer()
         return
 
+    # bounded probe concurrency: 10 parallel sockets prevent hitting local fd limits
     semaphore = asyncio.Semaphore(10)
 
     async def probe(entry):
