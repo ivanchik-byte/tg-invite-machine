@@ -38,6 +38,7 @@ from app.services.task_manager import invite_task_manager
 from app.telegram.client_factory import get_telethon_client
 from app.core.utils import normalize_chat_identifier, safe_edit_text
 from app.services.account_service import auto_recover_cooldowns
+from app.services.proxy_service import auto_assign_proxies
 
 inviter_router = Router()
 
@@ -247,6 +248,7 @@ async def callback_invite_start(callback: CallbackQuery, state: FSMContext):
             .where(Account.is_active == True, Account.status != "banned")
             .values(status="active", cooldown_until=None)
         )
+        await auto_assign_proxies(session)
         await session.commit()
 
         accounts_count = (await session.execute(
@@ -869,6 +871,7 @@ async def callback_invite_resume_paused(callback: CallbackQuery, state: FSMConte
             .where(Account.is_active == True, Account.status != "banned")
             .values(status="active", cooldown_until=None)
         )
+        await auto_assign_proxies(session)
         task.status = "running"
         await session.commit()
         target_link = target_group.username or str(target_group.tg_id)

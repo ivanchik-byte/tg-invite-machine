@@ -589,15 +589,11 @@ class InviterOrchestrator:
                             task.finished_at = now
                 else:
                     if db_member:
-                        if error_status == "account_banned":
-                            # Account was banned; preserve member as pending for next worker
+                        if error_status in ("account_banned", "flood_wait", "peer_flood", "no_rights"):
+                            # Account-side restriction or flood. Target user was never invited.
+                            # DO NOT remove or defer the user from the queue; keep them pending.
                             db_member.status = "pending"
                             db_member.reason = None
-                        elif error_status in ("flood_wait", "peer_flood"):
-                            # flood hit: park member out of pending so the next
-                            # LIMIT 1 pick doesn't retry the same user
-                            db_member.status = "deferred"
-                            db_member.reason = error_reason
                         else:
                             db_member.status = error_status or "failed"
                             db_member.reason = error_reason

@@ -7,5 +7,6 @@ aiosqlite==0.22.1
 pydantic==2.13.5
 pydantic-settings==2.15.0
 PySocks==1.7.1
+python-socks[asyncio]==3.1.1
 aiofiles==25.1.0
 openpyxl==3.1.5

@@ -8,7 +8,8 @@ from app.core.database import async_session_factory
 from app.models.models import Proxy, Account
 from app.bot.states import ProxyState
 from app.bot.keyboards import proxies_menu_keyboard, back_keyboard
-from app.services.proxy_service import import_proxies_from_text, check_proxy_reachability
+from app.services.proxy_service import import_proxies_from_text, check_proxy_reachability, auto_assign_proxies
+from app.telegram.client_factory import decrypt_proxy_password
 from app.core.utils import safe_edit_text
 
 proxies_router = Router()
@@ -98,7 +99,15 @@ async def callback_proxy_check(callback: CallbackQuery):
     failed = 0
 
     for idx, proxy in enumerate(proxies, 1):
-        is_ok, err = await check_proxy_reachability(proxy.host, proxy.port)
+        pwd = decrypt_proxy_password(proxy.password) if proxy.password else None
+        is_ok, err = await check_proxy_reachability(
+            host=proxy.host,
+            port=proxy.port,
+            protocol=proxy.protocol,
+            username=proxy.username,
+            password=pwd,
+            timeout_seconds=7.0
+        )
         async with async_session_factory() as session:
             db_proxy = await session.get(Proxy, proxy.id)
             if db_proxy:
@@ -122,3 +131,10 @@ async def callback_proxy_check(callback: CallbackQuery):
     )
     await safe_edit_text(status_msg, text, reply_markup=back_keyboard("nav_proxies"))
     await callback.answer()
+
+@proxies_router.callback_query(F.data == "proxy_auto_bind")
+async def callback_proxy_auto_bind(callback: CallbackQuery):
+    async with async_session_factory() as session:
+        assigned = await auto_assign_proxies(session)
+    await callback.answer(f"Привязано прокси к {assigned} аккаунтам.", show_alert=True)
+    await callback_nav_proxies(callback, None)

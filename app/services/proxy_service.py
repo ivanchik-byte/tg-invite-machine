@@ -65,16 +65,66 @@ def parse_proxy_line(raw_line: str) -> Optional[Tuple[str, int, Optional[str], O
 
     return None
 
-async def check_proxy_reachability(host: str, port: int, timeout_seconds: float = 5.0) -> Tuple[bool, Optional[str]]:
+async def check_proxy_reachability(
+    host: str,
+    port: int,
+    protocol: str = "socks5",
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    timeout_seconds: float = 8.0
+) -> Tuple[bool, Optional[str]]:
     loop = asyncio.get_running_loop()
+
+    def _test() -> Tuple[bool, Optional[str]]:
+        import socks
+        s = socks.socksocket()
+        proto = (protocol or "socks5").lower()
+        ptype = socks.SOCKS5 if proto == "socks5" else (socks.SOCKS4 if proto == "socks4" else socks.HTTP)
+        s.set_proxy(ptype, host, port, username=username, password=password)
+        s.settimeout(timeout_seconds)
+        try:
+            s.connect(("149.154.175.54", 443))
+            s.close()
+            return True, None
+        except Exception as exc:
+            return False, str(exc)
+
     try:
-        await asyncio.wait_for(
-            loop.run_in_executor(None, lambda: socket.create_connection((host, port), timeout=timeout_seconds).close()),
-            timeout=timeout_seconds + 1.0
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _test),
+            timeout=timeout_seconds + 2.0
         )
-        return True, None
     except Exception as exc:
         return False, str(exc)
+
+async def auto_assign_proxies(session: AsyncSession) -> int:
+    from app.models.models import Account
+    active_proxies = (await session.execute(
+        select(Proxy).where(Proxy.is_active == True).order_by(Proxy.id.asc())
+    )).scalars().all()
+
+    if not active_proxies:
+        return 0
+
+    active_proxy_ids = [p.id for p in active_proxies]
+    accounts_without_proxy = (await session.execute(
+        select(Account).where(
+            Account.is_active == True,
+            (Account.proxy_id.is_(None)) | (Account.proxy_id.not_in(active_proxy_ids))
+        ).order_by(Account.id.asc())
+    )).scalars().all()
+
+    if not accounts_without_proxy:
+        return 0
+
+    assigned_count = 0
+    for idx, acc in enumerate(accounts_without_proxy):
+        chosen_proxy = active_proxies[idx % len(active_proxies)]
+        acc.proxy_id = chosen_proxy.id
+        assigned_count += 1
+
+    await session.commit()
+    return assigned_count
 
 async def import_proxies_from_text(session: AsyncSession, raw_text: str) -> Tuple[int, int]:
     added_count = 0

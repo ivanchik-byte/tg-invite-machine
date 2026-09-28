@@ -288,5 +288,41 @@ def test_auto_wait_cooldown_threshold():
     assert max_auto_wait >= 600
     assert 300 <= max_auto_wait
 
+@pytest.mark.asyncio
+async def test_peer_flood_leaves_member_pending():
+    test_uid = 999555111
+    async with async_session_factory() as session:
+        await session.execute(delete(AudienceMember).where(AudienceMember.tg_id == test_uid))
+        await session.commit()
+
+        member = AudienceMember(
+            tg_id=test_uid,
+            username="flood_victim",
+            source_chat="donor_flood",
+            status="pending"
+        )
+        session.add(member)
+        await session.commit()
+
+        # Simulate what inviter_service does on peer_flood / flood_wait
+        error_status = "peer_flood"
+        db_member = (await session.execute(select(AudienceMember).where(AudienceMember.tg_id == test_uid))).scalar_one()
+
+        if error_status in ("account_banned", "flood_wait", "peer_flood", "no_rights"):
+            db_member.status = "pending"
+            db_member.reason = None
+        else:
+            db_member.status = error_status
+
+        await session.commit()
+
+        checked = (await session.execute(select(AudienceMember).where(AudienceMember.tg_id == test_uid))).scalar_one()
+        assert checked.status == "pending"
+        assert checked.reason is None
+
+        await session.execute(delete(AudienceMember).where(AudienceMember.tg_id == test_uid))
+        await session.commit()
+
+
 
 

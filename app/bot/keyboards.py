@@ -53,6 +53,9 @@ def proxies_menu_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="Проверить соединение", callback_data="proxy_check")
     )
     builder.row(
+        InlineKeyboardButton(text="Привязать к аккаунтам", callback_data="proxy_auto_bind"),
+    )
+    builder.row(
         InlineKeyboardButton(text="Назад в меню", callback_data="nav_main")
     )
     return builder.as_markup()

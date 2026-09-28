@@ -160,6 +160,18 @@ async def collect_chat_members(
             )
             existing_usernames.update(q4.scalars().all())
 
+        # Reactivate any previously deferred members found in collected chat
+        for i in range(0, len(user_ids), 500):
+            chunk_ids = user_ids[i:i + 500]
+            await session.execute(
+                update(AudienceMember)
+                .where(
+                    AudienceMember.tg_id.in_(chunk_ids),
+                    AudienceMember.status == "deferred"
+                )
+                .values(status="pending", reason=None)
+            )
+
         new_members = []
         new_history = []
         for tg_user in all_users:
