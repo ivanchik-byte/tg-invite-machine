@@ -309,14 +309,18 @@ class InviterOrchestrator:
                         )
                     break
 
-                daily_limit = await get_daily_invite_limit()
+                daily_limit, excluded_ids, blacklist_enabled, recent_only = await asyncio.gather(
+                    get_daily_invite_limit(),
+                    get_excluded_worker_ids(),
+                    get_privacy_blacklist_enabled(),
+                    get_recent_only_enabled(),
+                )
                 is_sqlite = "sqlite" in settings.DATABASE_URL
                 worker_conditions = [
                     Account.is_active == True,
                     Account.status == "active",
                     Account.daily_invites_count < daily_limit,
                 ]
-                excluded_ids = await get_excluded_worker_ids()
                 if excluded_ids:
                     worker_conditions.append(~Account.id.in_(excluded_ids))
                 # order by last_attempt_at so failed targets rotate instead of sticking to one worker
@@ -407,7 +411,6 @@ class InviterOrchestrator:
                         break
 
 
-                blacklist_enabled = await get_privacy_blacklist_enabled()
                 conditions = [AudienceMember.status == "pending"]
                 if blacklist_enabled:
                     restricted_subq = select(AudienceHistory.tg_id).where(
@@ -420,7 +423,7 @@ class InviterOrchestrator:
                         )
                     )
                 # filter by snapshot taken at scrape time to avoid extra get_entity calls
-                if await get_recent_only_enabled():
+                if recent_only:
                     conditions.append(AudienceMember.last_seen_at.is_not(None))
 
                 target_query = select(AudienceMember).where(and_(*conditions)).order_by(AudienceMember.id.asc()).limit(1)
@@ -470,7 +473,7 @@ class InviterOrchestrator:
                         parts = speed_profile.split(":")
                         if float(parts[1]) < 15.0:
                             skip_reading = True
-                    except Exception:
+                    except (ValueError, IndexError):
                         pass
                 if not skip_reading:
                     await simulate_pre_invite_reading(client, target_input, mark_read=mark_read)

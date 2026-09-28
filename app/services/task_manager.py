@@ -3,8 +3,6 @@ import time
 from typing import Optional, Any, Coroutine
 
 class InviteTaskManager:
-    """Manages the lifecycle and state of the active background invite task."""
-
     def __init__(self) -> None:
         self.active_task_id: Optional[int] = None
         self.active_orchestrator: Optional[Any] = None
@@ -33,17 +31,15 @@ class InviteTaskManager:
         return task
 
     def stop(self) -> bool:
-        if self.active_orchestrator:
-            self.active_orchestrator.stop()
-            handle = self.active_task_handle
-            self.active_task_id = None
-            self.active_orchestrator = None
-            self.active_task_handle = None
-            # interrupt active loop if currently suspended in asyncio.sleep
-            if handle and not handle.done():
-                handle.cancel()
-            return True
-        return False
+        if not self.active_orchestrator:
+            return False
+        self.active_orchestrator.stop()
+        self.active_orchestrator = None
+        self.active_task_id = None
+        handle = self.active_task_handle
+        if handle and not handle.done():
+            handle.cancel()
+        return True
 
     def pause(self) -> bool:
         if self.active_orchestrator:

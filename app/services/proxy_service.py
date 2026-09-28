@@ -7,7 +7,7 @@ from urllib.parse import urlparse, unquote
 from sqlalchemy import select, and_, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import Proxy
+from app.models.models import Proxy, Account
 from app.core.security import encrypt_session_string, decrypt_session_string
 
 ALLOWED_PROXY_PROTOCOLS = ("socks5", "socks4", "http")
@@ -120,7 +120,6 @@ async def check_proxy_reachability(
         return False, str(exc)
 
 async def auto_assign_proxies(session: AsyncSession) -> int:
-    from app.models.models import Account
     active_proxies = (await session.execute(
         select(Proxy).where(Proxy.is_active == True).order_by(Proxy.id.asc())
     )).scalars().all()
@@ -163,18 +162,26 @@ async def import_proxies_from_text(session: AsyncSession, raw_text: str) -> Tupl
     if not parsed_lines:
         return added_count, skipped_count
 
-    pairs = [(host, port) for host, port, _, _, _ in parsed_lines]
-    pair_filter = or_(*[and_(Proxy.host == h, Proxy.port == p) for h, p in pairs])
+    pairs = [(host, port, protocol, username) for host, port, username, _, protocol in parsed_lines]
+    pair_filter = or_(*[
+        and_(
+            Proxy.host == h,
+            Proxy.port == p,
+            Proxy.protocol == proto,
+            Proxy.username.is_(u) if u is None else Proxy.username == u,
+        )
+        for h, p, proto, u in pairs
+    ])
     existing_rows = (await session.execute(
         select(Proxy).where(pair_filter)
     )).scalars().all()
     existing_by_endpoint = {(p.host, p.port, p.protocol, p.username): p for p in existing_rows}
+    seen_in_batch: set = set(existing_by_endpoint)
 
     for host, port, username, password, protocol in parsed_lines:
         key = (host, port, protocol, username)
         known = existing_by_endpoint.get(key)
-        if known:
-            # fernet uses random iv per encrypt, so decrypt to check if password actually changed
+        if known is not None:
             stored_password = None
             if known.password:
                 try:
@@ -189,6 +196,9 @@ async def import_proxies_from_text(session: AsyncSession, raw_text: str) -> Tupl
             else:
                 skipped_count += 1
             continue
+        if key in seen_in_batch:
+            skipped_count += 1
+            continue
 
         session.add(Proxy(
             host=host,
@@ -198,14 +208,13 @@ async def import_proxies_from_text(session: AsyncSession, raw_text: str) -> Tupl
             protocol=protocol,
             is_active=True
         ))
-        existing_by_endpoint[key] = True
+        seen_in_batch.add(key)
         added_count += 1
 
     await session.commit()
     return added_count, skipped_count
 
 async def delete_single_proxy(session: AsyncSession, proxy_id: int) -> bool:
-    from app.models.models import Account
     proxy = await session.get(Proxy, proxy_id)
     if not proxy:
         return False
@@ -217,7 +226,6 @@ async def delete_single_proxy(session: AsyncSession, proxy_id: int) -> bool:
     return True
 
 async def purge_dead_proxies(session: AsyncSession) -> int:
-    from app.models.models import Account
     dead_proxies = (await session.execute(
         select(Proxy).where(Proxy.is_active == False)
     )).scalars().all()
@@ -233,7 +241,6 @@ async def purge_dead_proxies(session: AsyncSession) -> int:
     return len(dead_proxies)
 
 async def purge_all_proxies(session: AsyncSession) -> int:
-    from app.models.models import Account
     all_proxies = (await session.execute(select(Proxy))).scalars().all()
     if not all_proxies:
         return 0
@@ -246,7 +253,6 @@ async def purge_all_proxies(session: AsyncSession) -> int:
     return len(all_proxies)
 
 async def bind_proxy_to_account(session: AsyncSession, proxy_id: int, account_id: int) -> bool:
-    from app.models.models import Account
     account = await session.get(Account, account_id)
     proxy = await session.get(Proxy, proxy_id)
     if not account or not proxy:
@@ -256,7 +262,6 @@ async def bind_proxy_to_account(session: AsyncSession, proxy_id: int, account_id
     return True
 
 async def unbind_proxy_from_account(session: AsyncSession, account_id: int) -> bool:
-    from app.models.models import Account
     account = await session.get(Account, account_id)
     if not account:
         return False
@@ -265,7 +270,6 @@ async def unbind_proxy_from_account(session: AsyncSession, account_id: int) -> b
     return True
 
 async def unbind_all_from_proxy(session: AsyncSession, proxy_id: int) -> int:
-    from app.models.models import Account
     result = await session.execute(
         update(Account).where(Account.proxy_id == proxy_id).values(proxy_id=None)
     )

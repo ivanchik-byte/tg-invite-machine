@@ -1,4 +1,5 @@
 import asyncio
+import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +18,7 @@ from app.core.database import async_session_factory
 from app.models.models import Account, AudienceMember, AudienceHistory
 from app.bot.states import ParserState
 from app.bot.keyboards import parser_menu_keyboard, back_keyboard, main_menu_keyboard
-from app.bot.handlers.menu import build_main_dashboard_text
+from app.bot.dashboard import build_main_dashboard_text
 from app.services.collector_service import collect_chat_members
 from app.core.utils import normalize_chat_identifier, safe_edit_text
 
@@ -156,7 +157,7 @@ async def execute_parsing(message: Message, state: FSMContext, chat_identifier: 
         if new_user_tag:
             recent_users.appendleft(new_user_tag)
 
-        now = asyncio.get_event_loop().time()
+        now = time.monotonic()
         if now - last_ui_update < 1.3 and count > 0:
             return
         last_ui_update = now
@@ -244,22 +245,22 @@ async def callback_parse_export(callback: CallbackQuery):
     export_path.parent.mkdir(parents=True, exist_ok=True)
 
     written = 0
-    # stream export in chunks to keep memory footprint bounded
-    with open(export_path, "w", encoding="utf-8") as out:
-        offset = 0
-        while True:
-            async with async_session_factory() as session:
-                page = (await session.execute(
-                    select(AudienceMember.username, AudienceMember.tg_id)
-                    .order_by(AudienceMember.id.asc())
-                    .offset(offset).limit(1000)
-                )).all()
-            if not page:
-                break
-            for username, tg_id in page:
-                out.write(f"@{username}\n" if username else f"{tg_id}\n")
-                written += 1
-            offset += len(page)
+    lines: list[str] = []
+    offset = 0
+    while True:
+        async with async_session_factory() as session:
+            page = (await session.execute(
+                select(AudienceMember.username, AudienceMember.tg_id)
+                .order_by(AudienceMember.id.asc())
+                .offset(offset).limit(1000)
+            )).all()
+        if not page:
+            break
+        for username, tg_id in page:
+            lines.append(f"@{username}\n" if username else f"{tg_id}\n")
+            written += 1
+        offset += len(page)
+    await asyncio.to_thread(export_path.write_text, "".join(lines), "utf-8")
 
     document_file = FSInputFile(export_path, filename=f"audience_{timestamp}.txt")
     await callback.message.answer_document(

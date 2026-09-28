@@ -155,15 +155,12 @@ def daily_limit_keyboard(current_limit: int) -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="Назад в инвайтер", callback_data="nav_inviter"))
     return builder.as_markup()
 
-def speed_profile_keyboard(current_profile: str = "normal") -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    c_mark = "• " if current_profile == "cautious" else ""
-    n_mark = "• " if current_profile == "normal" else ""
-    f_mark = "• " if current_profile == "fast" else ""
+def speed_rows(builder: InlineKeyboardBuilder, current_profile: str, prefix: str) -> None:
+    mark = lambda name: "• " if current_profile == name else ""
     builder.row(
-        InlineKeyboardButton(text=f"{c_mark}Осторожный (50-110с)", callback_data="set_speed_cautious"),
-        InlineKeyboardButton(text=f"{n_mark}Обычный (35-75с)", callback_data="set_speed_normal"),
-        InlineKeyboardButton(text=f"{f_mark}Быстрый (17-37с)", callback_data="set_speed_fast")
+        InlineKeyboardButton(text=f"{mark('cautious')}Осторожный (50-110с)", callback_data=f"{prefix}_cautious"),
+        InlineKeyboardButton(text=f"{mark('normal')}Обычный (35-75с)", callback_data=f"{prefix}_normal"),
+        InlineKeyboardButton(text=f"{mark('fast')}Быстрый (17-37с)", callback_data=f"{prefix}_fast")
     )
     custom_mark = "• " if current_profile.startswith("custom:") else ""
     clean_range = current_profile.replace("custom:", "").replace(":", "-")
@@ -172,9 +169,11 @@ def speed_profile_keyboard(current_profile: str = "normal") -> InlineKeyboardMar
         if current_profile.startswith("custom:")
         else "Свой интервал"
     )
-    builder.row(
-        InlineKeyboardButton(text=custom_text, callback_data="set_speed_custom")
-    )
+    builder.row(InlineKeyboardButton(text=custom_text, callback_data=f"{prefix}_custom"))
+
+def speed_profile_keyboard(current_profile: str = "normal") -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    speed_rows(builder, current_profile, "set_speed")
     builder.row(
         InlineKeyboardButton(text="Назад", callback_data="nav_inviter")
     )
@@ -209,23 +208,7 @@ def inviter_config_keyboard(selected_limit: Optional[int], current_profile: str,
     )
     builder.row(InlineKeyboardButton(text=custom_limit_label, callback_data="cfg_limit_custom"))
 
-    c_mark = "• " if current_profile == "cautious" else ""
-    n_mark = "• " if current_profile == "normal" else ""
-    f_mark = "• " if current_profile == "fast" else ""
-    builder.row(
-        InlineKeyboardButton(text=f"{c_mark}Осторожный (50-110с)", callback_data="cfg_speed_cautious"),
-        InlineKeyboardButton(text=f"{n_mark}Обычный (35-75с)", callback_data="cfg_speed_normal"),
-        InlineKeyboardButton(text=f"{f_mark}Быстрый (17-37с)", callback_data="cfg_speed_fast"),
-    )
-
-    custom_speed_mark = "• " if current_profile.startswith("custom:") else ""
-    clean_range = current_profile.replace("custom:", "").replace(":", "-")
-    custom_speed_text = (
-        f"{custom_speed_mark}Свой интервал: {clean_range}с"
-        if current_profile.startswith("custom:")
-        else "Свой интервал"
-    )
-    builder.row(InlineKeyboardButton(text=custom_speed_text, callback_data="cfg_speed_custom"))
+    speed_rows(builder, current_profile, "cfg_speed")
 
     builder.row(InlineKeyboardButton(text="Запустить инвайтинг", callback_data="cfg_launch"))
     builder.row(InlineKeyboardButton(text="Отмена", callback_data="cfg_cancel"))
@@ -238,6 +221,15 @@ def back_keyboard(callback_target: str = "nav_main") -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="Назад", callback_data=callback_target)
     )
     return builder.as_markup()
+
+def page_nav(builder: InlineKeyboardBuilder, offset: int, limit: int, total: int, prefix: str) -> None:
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton(text="Назад", callback_data=f"{prefix}_{max(0, offset - limit)}"))
+    if offset + limit < total:
+        nav.append(InlineKeyboardButton(text="Вперед", callback_data=f"{prefix}_{offset + limit}"))
+    if nav:
+        builder.row(*nav)
 
 def migrate_confirm_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -255,13 +247,7 @@ def accounts_grid_keyboard(entries: list, offset: int, limit: int, total: int) -
             row = []
     if row:
         builder.row(*row)
-    nav_buttons = []
-    if offset > 0:
-        nav_buttons.append(InlineKeyboardButton(text="Назад", callback_data=f"acc_list_{max(0, offset - limit)}"))
-    if offset + limit < total:
-        nav_buttons.append(InlineKeyboardButton(text="Вперед", callback_data=f"acc_list_{offset + limit}"))
-    if nav_buttons:
-        builder.row(*nav_buttons)
+    page_nav(builder, offset, limit, total, "acc_list")
     builder.row(InlineKeyboardButton(text="К списку меню", callback_data="nav_accounts"))
     return builder.as_markup()
 
@@ -273,15 +259,7 @@ def accounts_pagination_keyboard(offset: int, limit: int, total: int, account_it
             builder.row(
                 InlineKeyboardButton(text=f"#{acc_id} {name}", callback_data=f"acc_view_{acc_id}_{offset}")
             )
-    nav_buttons = []
-    if offset > 0:
-        prev_offset = max(0, offset - limit)
-        nav_buttons.append(InlineKeyboardButton(text="Назад", callback_data=f"acc_list_{prev_offset}"))
-    if offset + limit < total:
-        next_offset = offset + limit
-        nav_buttons.append(InlineKeyboardButton(text="Вперед", callback_data=f"acc_list_{next_offset}"))
-    if nav_buttons:
-        builder.row(*nav_buttons)
+    page_nav(builder, offset, limit, total, "acc_list")
     builder.row(InlineKeyboardButton(text="К списку меню", callback_data="nav_accounts"))
     return builder.as_markup()
 
@@ -324,15 +302,7 @@ def proxy_pagination_keyboard(offset: int, limit: int, total: int, proxy_items: 
             builder.row(
                 InlineKeyboardButton(text=label, callback_data=f"proxy_view_{p_id}_{offset}")
             )
-    nav_buttons = []
-    if offset > 0:
-        prev_offset = max(0, offset - limit)
-        nav_buttons.append(InlineKeyboardButton(text="Назад", callback_data=f"proxy_list_{prev_offset}"))
-    if offset + limit < total:
-        next_offset = offset + limit
-        nav_buttons.append(InlineKeyboardButton(text="Вперед", callback_data=f"proxy_list_{next_offset}"))
-    if nav_buttons:
-        builder.row(*nav_buttons)
+    page_nav(builder, offset, limit, total, "proxy_list")
     builder.row(
         InlineKeyboardButton(text="Проверить все", callback_data="proxy_check"),
         InlineKeyboardButton(text="К меню прокси", callback_data="nav_proxies")

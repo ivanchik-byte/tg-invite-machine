@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import string
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import DATA_DIR
 from app.models.models import Account, AudienceMember, AudienceHistory, utc_now
 from app.telegram.client_factory import get_telethon_client
+
+logger = logging.getLogger("tg_invite_machine")
 
 ProgressCallback = Callable[[int, str, Optional[str]], Awaitable[None]]
 
@@ -59,8 +62,8 @@ async def collect_chat_members(
         if isinstance(chat_entity, Channel) and not getattr(chat_entity, "left", False) and getattr(chat_entity, "participant", None) is None:
             try:
                 await client(JoinChannelRequest(chat_entity))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("auto-join skipped: %s", exc)
 
         collected_users: dict[int, User] = {}
         cutoff_date = None
@@ -144,32 +147,32 @@ async def collect_chat_members(
 
         for i in range(0, len(user_ids), 500):
             chunk_ids = user_ids[i:i + 500]
-            q1 = await session.execute(
+            known_members = await session.execute(
                 select(AudienceMember.tg_id).where(AudienceMember.tg_id.in_(chunk_ids))
             )
-            existing_ids.update(q1.scalars().all())
+            existing_ids.update(known_members.scalars().all())
 
-            q2 = await session.execute(
+            known_history = await session.execute(
                 select(AudienceHistory.tg_id).where(AudienceHistory.tg_id.in_(chunk_ids))
             )
-            existing_ids.update(q2.scalars().all())
+            existing_ids.update(known_history.scalars().all())
 
         raw_usernames = [u.username.lower() for u in all_users if u.username]
         for i in range(0, len(raw_usernames), 500):
             chunk_un = raw_usernames[i:i + 500]
-            q3 = await session.execute(
+            known_member_names = await session.execute(
                 select(func.lower(AudienceMember.username)).where(
                     func.lower(AudienceMember.username).in_(chunk_un)
                 )
             )
-            existing_usernames.update(q3.scalars().all())
+            existing_usernames.update(known_member_names.scalars().all())
 
-            q4 = await session.execute(
+            known_history_names = await session.execute(
                 select(func.lower(AudienceHistory.username)).where(
                     func.lower(AudienceHistory.username).in_(chunk_un)
                 )
             )
-            existing_usernames.update(q4.scalars().all())
+            existing_usernames.update(known_history_names.scalars().all())
 
         # reactivate deferred members if they re-appeared in donor chat
         for i in range(0, len(user_ids), 500):

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from typing import Optional
 from datetime import datetime, timezone
@@ -36,12 +37,14 @@ from app.bot.keyboards import (
     daily_limit_keyboard,
     main_menu_keyboard,
 )
-from app.bot.handlers.menu import build_main_dashboard_text
+from app.bot.dashboard import build_main_dashboard_text
 from app.services.inviter_service import InviterOrchestrator
 from app.services.task_manager import invite_task_manager
 from app.telegram.client_factory import get_telethon_client
 from app.core.utils import normalize_chat_identifier, safe_edit_text
 from app.services.proxy_service import auto_assign_proxies
+
+logger = logging.getLogger("tg_invite_machine")
 
 inviter_router = Router()
 
@@ -832,8 +835,8 @@ async def _create_and_launch_task(
                 text=ui_text,
                 reply_markup=inviter_menu_keyboard(task_running=not is_final)
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("progress UI skipped: %s", exc)
 
     invite_task_manager.start(
         task_id=launched_task_id,
@@ -955,8 +958,8 @@ async def callback_invite_resume_paused(callback: CallbackQuery, state: FSMConte
                 text=ui_text,
                 reply_markup=inviter_menu_keyboard(task_running=not is_final)
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("progress UI skipped: %s", exc)
 
     invite_task_manager.start(
         task_id=task_id,
@@ -997,8 +1000,8 @@ async def callback_invite_stop(callback: CallbackQuery):
                         stopped_task.status = "stopped"
                         stopped_task.finished_at = datetime.now(timezone.utc).replace(tzinfo=None)
                         await session.commit()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("stop bookkeeping failed for task %s: %s", stopped_id, exc)
         await callback.answer("Инвайтинг остановлен.")
         await callback.message.edit_text("Инвайтинг остановлен пользователем.", reply_markup=inviter_menu_keyboard(task_running=False))
     else:

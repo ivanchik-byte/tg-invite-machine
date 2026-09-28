@@ -73,6 +73,27 @@ def test_safe_zip_size_limit():
         with pytest.raises(zipfile.BadZipFile, match="exceeds maximum allowed"):
             safe_extract_zip(archive_path, target_dir, max_uncompressed_bytes=500)
 
+def test_safe_zip_max_files_blocked():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        archive_path = Path(temp_dir) / "many.zip"
+        target_dir = Path(temp_dir) / "extracted"
+
+        with zipfile.ZipFile(archive_path, "w") as zf:
+            for i in range(5):
+                zf.writestr(f"file_{i}.txt", b"x")
+
+        with pytest.raises(zipfile.BadZipFile, match="too many files"):
+            safe_extract_zip(archive_path, target_dir, max_files=3)
+
+@pytest.mark.parametrize("profile,low,high", [
+    ("custom:40:80", 40.0, 80.0),
+    ("custom:80:40", 40.0, 80.0),
+    ("custom:0:0", 0.0, 0.0),
+])
+def test_custom_delay_respects_user_range(profile, low, high):
+    for _ in range(30):
+        assert low <= calculate_delay(profile) <= high
+
 def test_proxy_parser_variations():
     socks_standard = parse_proxy_line("192.168.1.1:1080:user:pass")
     assert socks_standard == ("192.168.1.1", 1080, "user", "pass", "socks5")
