@@ -77,9 +77,14 @@ def inviter_menu_keyboard(
     is_paused: bool = False,
     daily_limit: Optional[int] = None,
     privacy_blacklist: bool = True,
+    paused_task_id: Optional[int] = None,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if not task_running:
+        if paused_task_id is not None:
+            builder.row(
+                InlineKeyboardButton(text=f"Возобновить задачу #{paused_task_id}", callback_data=f"invite_resume_paused_{paused_task_id}")
+            )
         builder.row(
             InlineKeyboardButton(text="Запустить инвайт", callback_data="invite_start"),
             InlineKeyboardButton(text="Профиль скорости", callback_data="invite_speed")

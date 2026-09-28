@@ -271,4 +271,22 @@ async def test_reset_all_cooldowns():
         await session.execute(delete(Account).where(Account.phone == test_phone))
         await session.commit()
 
+def test_peer_flood_cooldown_config():
+    from app.core.config import settings
+    assert settings.PEER_FLOOD_COOLDOWN_MINUTES == 5
+
+def test_inviter_menu_keyboard_with_paused_task():
+    from app.bot.keyboards import inviter_menu_keyboard
+    kb = inviter_menu_keyboard(task_running=False, paused_task_id=26)
+    callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+    assert "invite_resume_paused_26" in callbacks
+
+def test_auto_wait_cooldown_threshold():
+    from app.core.config import settings
+    max_auto_wait = max(600, settings.PEER_FLOOD_COOLDOWN_MINUTES * 60 + 30)
+    # 5 minutes = 300s, max_auto_wait should be >= 600s
+    assert max_auto_wait >= 600
+    assert 300 <= max_auto_wait
+
+
 

@@ -341,15 +341,20 @@ class InviterOrchestrator:
                         )).scalar_one()
 
                         wait_sec = (min_cd - now).total_seconds() if min_cd else 0
-                        # If cooldown is short (<= 180s, e.g. FloodWait), wait and resume campaign
-                        if 0 < wait_sec <= 180:
+                        if wait_sec <= 0:
+                            await auto_recover_cooldowns(session)
+                            continue
+
+                        # If cooldown is within auto-wait threshold (up to 10 minutes or configured minutes + 30s)
+                        max_auto_wait = max(600, settings.PEER_FLOOD_COOLDOWN_MINUTES * 60 + 30)
+                        if wait_sec <= max_auto_wait:
                             if progress_callback and task:
                                 await progress_callback(
                                     self.task_id,
                                     task.successful_invites,
                                     task.total_targets,
                                     task.flood_errors,
-                                    f"Все сессии в отлежке. Ожидание окончания флуд-паузы ({int(wait_sec)} сек)...",
+                                    f"Все сессии в отлежке. Ожидание окончания флуд-паузы ({int(wait_sec)} сек)... Автоматическое возобновление.",
                                     is_final=False
                                 )
                             try:
@@ -358,12 +363,12 @@ class InviterOrchestrator:
                             except asyncio.TimeoutError:
                                 continue
 
-                        # If cooldown is long (e.g. PeerFlood hours): pause task gracefully
+                        # If cooldown is long (e.g. over auto-wait threshold): pause task gracefully
                         if task:
                             task.status = "paused"
                             await session.commit()
                         cd_time_str = min_cd.strftime("%H:%M:%S") if min_cd else "позже"
-                        msg = f"Все сессии в отлежке (PeerFlood/FloodWait до {cd_time_str}). Задача на паузе."
+                        msg = f"Все сессии в отлежке (до {cd_time_str}). Задача на паузе."
                         if progress_callback:
                             await progress_callback(
                                 self.task_id,
@@ -546,7 +551,7 @@ class InviterOrchestrator:
                     db_acc = await session.get(Account, account_id)
                     if db_acc:
                         db_acc.status = "cooldown"
-                        db_acc.cooldown_until = now + timedelta(hours=settings.PEER_FLOOD_COOLDOWN_HOURS)
+                        db_acc.cooldown_until = now + timedelta(minutes=settings.PEER_FLOOD_COOLDOWN_MINUTES)
                         db_acc.flood_incidents += 1
                         await session.commit()
 

@@ -65,6 +65,10 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
         cooldown_accounts = (await session.execute(
             select(func.count(Account.id)).where(Account.status == "cooldown")
         )).scalar_one()
+        paused_task = (await session.execute(
+            select(InviteTask).where(InviteTask.status == "paused").order_by(InviteTask.id.desc()).limit(1)
+        )).scalars().first()
+        paused_task_id = paused_task.id if paused_task else None
 
     orch = active_orchestrator or invite_task_manager.active_orchestrator
     is_paused = getattr(orch, "is_paused", False)
@@ -102,6 +106,7 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
             is_paused=is_paused,
             daily_limit=daily_limit,
             privacy_blacklist=blacklist_enabled,
+            paused_task_id=paused_task_id,
         )
     )
     await callback.answer()
@@ -834,6 +839,110 @@ async def callback_invite_resume(callback: CallbackQuery):
         )
     else:
         await callback.answer("Нет активной задачи.", show_alert=True)
+
+@inviter_router.callback_query(F.data.startswith("invite_resume_paused_"))
+async def callback_invite_resume_paused(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    global active_orchestrator, active_task_handle, active_task_id
+    raw_id = callback.data.replace("invite_resume_paused_", "")
+    try:
+        task_id = int(raw_id)
+    except ValueError:
+        await callback.answer("Неверный ID задачи.", show_alert=True)
+        return
+
+    if invite_task_manager.is_running():
+        await callback.answer("Уже выполняется другая задача.", show_alert=True)
+        return
+
+    async with async_session_factory() as session:
+        task = await session.get(InviteTask, task_id)
+        if not task:
+            await callback.answer("Задача не найдена.", show_alert=True)
+            return
+        target_group = await session.get(TargetGroup, task.target_group_id)
+        if not target_group:
+            await callback.answer("Целевая группа не найдена.", show_alert=True)
+            return
+
+        await session.execute(
+            update(Account)
+            .where(Account.is_active == True, Account.status != "banned")
+            .values(status="active", cooldown_until=None)
+        )
+        task.status = "running"
+        await session.commit()
+        target_link = target_group.username or str(target_group.tg_id)
+        chat_type = target_group.chat_type or "supergroup"
+        selected_limit = task.max_invites
+        speed_profile = task.speed_profile
+
+    await state.clear()
+    status_msg = callback.message
+    active_task_id = task_id
+    active_orchestrator = InviterOrchestrator(task_id=active_task_id)
+
+    chat_id = status_msg.chat.id
+    message_id = status_msg.message_id
+
+    async def update_status_ui(t_id: int, invited: int, total: int, floods: int, status_text: str, is_final: bool = False):
+        is_immediate = is_final or ("добавлен" in status_text)
+        if not invite_task_manager.should_update_ui(min_interval=1.5, is_final=is_immediate):
+            return
+
+        target_total = selected_limit if selected_limit else total
+        percent = min(1.0, max(0.0, invited / target_total)) if target_total > 0 else 0.0
+        bar_len = 10
+        filled = int(round(bar_len * percent))
+        bar = "█" * filled + "░" * (bar_len - filled)
+        prog_bar = f"[{bar}] {int(percent * 100)}%"
+
+        if "\n" in status_text:
+            body = status_text
+        else:
+            body = f"• <b>Текущий статус:</b> <code>{quote_html(status_text)}</code>"
+
+        ui_text = (
+            "<b>TG-INVITE-MACHINE | Мониторинг кампании</b>\n"
+            "────────────────────────\n"
+            f"<b>Целевой чат:</b> <code>{quote_html(target_link)}</code>\n"
+            f"<b>Прогресс:</b> <code>{prog_bar}</code> ({invited} / {target_total})\n"
+            f"• <b>Флуд-паузы:</b> <code>{floods}</code>\n\n"
+            f"{body}\n\n"
+            "<blockquote>Прогресс инвайтинга обновляется в реальном времени.</blockquote>"
+        )
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=ui_text,
+                reply_markup=inviter_menu_keyboard(task_running=not is_final)
+            )
+        except Exception:
+            pass
+
+    active_task_handle = invite_task_manager.start(
+        task_id=active_task_id,
+        orchestrator=active_orchestrator,
+        coro=active_orchestrator.run(
+            session_factory=async_session_factory,
+            progress_callback=update_status_ui
+        )
+    )
+
+    limit_desc = f"{selected_limit} участников" if selected_limit else "Без ограничений (вся база)"
+    speed_desc = speed_profile.replace("custom:", "свой: ") if speed_profile.startswith("custom:") else speed_profile
+    type_label = TARGET_TYPE_LABELS.get(chat_type, "чат")
+    await status_msg.edit_text(
+        "<b>TG-INVITE-MACHINE | Возобновление кампании</b>\n"
+        "────────────────────────\n"
+        f"<b>Статус:</b> <code>[ RUNNING ] Задача #{active_task_id} возобновлена</code>\n\n"
+        f"• <b>Целевой объект:</b> <code>{quote_html(target_link)}</code> ({type_label})\n"
+        f"• <b>Установленный лимит:</b> <code>{limit_desc}</code>\n"
+        f"• <b>Профиль задержки:</b> <code>{speed_desc}</code>\n\n"
+        "<blockquote>Распределенный воркер возобновил обработку очереди.</blockquote>",
+        reply_markup=inviter_menu_keyboard(task_running=True)
+    )
+    await callback.answer("Задача возобновлена.")
 
 @inviter_router.callback_query(F.data == "invite_stop")
 async def callback_invite_stop(callback: CallbackQuery):

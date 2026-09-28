@@ -1,3 +1,4 @@
+from typing import Optional
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, model_validator
@@ -41,10 +42,13 @@ class Settings(BaseSettings):
     MAX_INVITES_PER_SESSION_DAILY: int = Field(default=20, description="Daily limit per session")
 
     CIRCUIT_BREAKER_FLOOD_THRESHOLD: int = Field(default=3, description="Consecutive floods to trigger freeze")
-    PEER_FLOOD_COOLDOWN_HOURS: int = Field(default=12, description="Hours to cooldown an account on PeerFlood")
+    PEER_FLOOD_COOLDOWN_MINUTES: int = Field(default=5, description="Minutes to cooldown an account on PeerFlood")
+    PEER_FLOOD_COOLDOWN_HOURS: Optional[int] = Field(default=None, description="Deprecated fallback: cooldown in hours")
 
     @model_validator(mode="after")
     def validate_settings(self) -> "Settings":
+        if self.PEER_FLOOD_COOLDOWN_HOURS is not None:
+            self.PEER_FLOOD_COOLDOWN_MINUTES = self.PEER_FLOOD_COOLDOWN_HOURS * 60
         if self.MIN_DELAY_BETWEEN_INVITES > self.MAX_DELAY_BETWEEN_INVITES:
             raise ValueError("MIN_DELAY_BETWEEN_INVITES cannot exceed MAX_DELAY_BETWEEN_INVITES")
         if self.DEFAULT_SPEED_PROFILE not in {"cautious", "normal", "fast"}:
