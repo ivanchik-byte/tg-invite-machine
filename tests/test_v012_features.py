@@ -6,8 +6,10 @@ from app.models.models import Account, AudienceMember, AudienceHistory, TargetGr
 from app.core.settings_service import (
     get_privacy_blacklist_enabled,
     set_privacy_blacklist_enabled,
+    get_speed_profile,
+    set_speed_profile,
 )
-from app.services.inviter_service import InviterOrchestrator
+from app.services.inviter_service import InviterOrchestrator, calculate_delay
 from telethon.errors import UserChannelsTooMuchError
 
 @pytest.mark.asyncio
@@ -172,3 +174,35 @@ async def test_restoring_pending_when_blacklist_disabled():
         # Cleanup
         await session.execute(delete(AudienceMember).where(AudienceMember.tg_id == test_uid))
         await session.commit()
+
+@pytest.mark.asyncio
+async def test_speed_profile_persistence():
+    await set_speed_profile("cautious")
+    assert await get_speed_profile() == "cautious"
+
+    await set_speed_profile("custom:40:60")
+    assert await get_speed_profile() == "custom:40:60"
+
+    # Reset
+    await set_speed_profile("normal")
+    assert await get_speed_profile() == "normal"
+
+def test_calculate_delay_strictly_respects_custom_bounds():
+    # 40-60 custom interval must never produce < 40 or > 60
+    for _ in range(100):
+        d = calculate_delay("custom:40:60")
+        assert 40.0 <= d <= 60.0, f"Delay {d} out of bounds [40, 60]"
+
+    # 1-4 custom interval
+    for _ in range(50):
+        d = calculate_delay("custom:1:4")
+        assert 1.0 <= d <= 4.0, f"Delay {d} out of bounds [1, 4]"
+
+    # 0-0 turbo mode
+    assert calculate_delay("custom:0:0") == 0.0
+
+def test_calculate_delay_presets():
+    assert calculate_delay("cautious") > 0
+    assert calculate_delay("normal") > 0
+    assert calculate_delay("fast") > 0
+

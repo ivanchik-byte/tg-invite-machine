@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import async_session_factory
-from app.core.settings_service import get_daily_invite_limit
+from app.core.settings_service import get_daily_invite_limit, get_speed_profile
 from app.models.models import Account, Proxy, AudienceMember, InviteTask
 
 from app.bot.keyboards import main_menu_keyboard
@@ -94,7 +94,8 @@ async def build_main_dashboard_text() -> str:
             f"• <b>Флуд-паузы:</b> <code>{active_task.flood_waits_count}</code>\n\n"
         )
 
-    speed_label = settings.DEFAULT_SPEED_PROFILE.replace("custom:", "свой: ") if settings.DEFAULT_SPEED_PROFILE.startswith("custom:") else settings.DEFAULT_SPEED_PROFILE
+    current_speed = await get_speed_profile()
+    speed_label = current_speed.replace("custom:", "свой: ") if current_speed.startswith("custom:") else current_speed
     proxy_mode = "Строгий Zero-Leak" if settings.REQUIRE_STRICT_PROXIES else "Прямой (без прокси)"
 
     daily_limit = await get_daily_invite_limit()
@@ -162,7 +163,8 @@ async def build_stats_text() -> str:
     else:
         worker_status = "[ IDLE ]"
 
-    speed_label = settings.DEFAULT_SPEED_PROFILE.replace("custom:", "свой: ") if settings.DEFAULT_SPEED_PROFILE.startswith("custom:") else settings.DEFAULT_SPEED_PROFILE
+    current_speed = await get_speed_profile()
+    speed_label = current_speed.replace("custom:", "свой: ") if current_speed.startswith("custom:") else current_speed
     total_audience = pending_users + invited_users + restricted_users + deferred_users
 
     text = (

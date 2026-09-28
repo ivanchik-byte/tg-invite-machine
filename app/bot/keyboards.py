@@ -126,15 +126,25 @@ def daily_limit_keyboard(current_limit: int) -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="Назад в инвайтер", callback_data="nav_inviter"))
     return builder.as_markup()
 
-def speed_profile_keyboard() -> InlineKeyboardMarkup:
+def speed_profile_keyboard(current_profile: str = "normal") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    c_mark = "• " if current_profile == "cautious" else ""
+    n_mark = "• " if current_profile == "normal" else ""
+    f_mark = "• " if current_profile == "fast" else ""
     builder.row(
-        InlineKeyboardButton(text="Осторожный (50-110с)", callback_data="set_speed_cautious"),
-        InlineKeyboardButton(text="Обычный (35-75с)", callback_data="set_speed_normal"),
-        InlineKeyboardButton(text="Быстрый (17-37с)", callback_data="set_speed_fast")
+        InlineKeyboardButton(text=f"{c_mark}Осторожный (50-110с)", callback_data="set_speed_cautious"),
+        InlineKeyboardButton(text=f"{n_mark}Обычный (35-75с)", callback_data="set_speed_normal"),
+        InlineKeyboardButton(text=f"{f_mark}Быстрый (17-37с)", callback_data="set_speed_fast")
+    )
+    custom_mark = "• " if current_profile.startswith("custom:") else ""
+    clean_range = current_profile.replace("custom:", "").replace(":", "-")
+    custom_text = (
+        f"{custom_mark}Свой интервал: {clean_range}с"
+        if current_profile.startswith("custom:")
+        else "Свой интервал"
     )
     builder.row(
-        InlineKeyboardButton(text="Свой интервал", callback_data="set_speed_custom")
+        InlineKeyboardButton(text=custom_text, callback_data="set_speed_custom")
     )
     builder.row(
         InlineKeyboardButton(text="Назад", callback_data="nav_inviter")

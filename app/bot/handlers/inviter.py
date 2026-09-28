@@ -19,6 +19,8 @@ from app.core.settings_service import (
     set_daily_invite_limit,
     get_privacy_blacklist_enabled,
     set_privacy_blacklist_enabled,
+    get_speed_profile,
+    set_speed_profile,
 )
 from app.bot.states import InviterState
 from app.bot.keyboards import (
@@ -73,7 +75,8 @@ async def callback_nav_inviter(callback: CallbackQuery, state: FSMContext):
 
     daily_limit = await get_daily_invite_limit()
     blacklist_enabled = await get_privacy_blacklist_enabled()
-    speed_label = settings.DEFAULT_SPEED_PROFILE.replace("custom:", "свой: ") if settings.DEFAULT_SPEED_PROFILE.startswith("custom:") else settings.DEFAULT_SPEED_PROFILE
+    current_speed = await get_speed_profile()
+    speed_label = current_speed.replace("custom:", "свой: ") if current_speed.startswith("custom:") else current_speed
     bl_label = "ВКЛ (пропуск закрытых)" if blacklist_enabled else "ВЫКЛ (пробовать всех)"
 
     text = (
@@ -125,6 +128,7 @@ async def callback_invite_toggle_blacklist(callback: CallbackQuery, state: FSMCo
 
 @inviter_router.callback_query(F.data == "invite_speed")
 async def callback_invite_speed(callback: CallbackQuery):
+    curr_profile = await get_speed_profile()
     text = (
         "Выберите профиль скорости инвайта:\n\n"
         "Осторожный (50-110 сек): минимальный риск, для свежих аккаунтов.\n"
@@ -132,7 +136,7 @@ async def callback_invite_speed(callback: CallbackQuery):
         "Быстрый (17-37 сек): повышенная скорость, для прогретых аккаунтов.\n"
         "Свой интервал: ручная настройка диапазона задержки."
     )
-    await safe_edit_text(callback.message, text, reply_markup=speed_profile_keyboard())
+    await safe_edit_text(callback.message, text, reply_markup=speed_profile_keyboard(curr_profile))
     await callback.answer()
 
 @inviter_router.callback_query(F.data.startswith("set_speed_"))
@@ -151,7 +155,7 @@ async def callback_set_speed(callback: CallbackQuery, state: FSMContext):
     if profile not in VALID_SPEED_PROFILES:
         await callback.answer("Недопустимый профиль скорости.", show_alert=True)
         return
-    settings.DEFAULT_SPEED_PROFILE = profile
+    await set_speed_profile(profile)
     await callback.answer(f"Установлен профиль: {profile}")
     await callback_nav_inviter(callback, state)
 
@@ -358,6 +362,7 @@ async def handle_target_group(message: Message, state: FSMContext, bot: Bot):
             reply_markup=migrate_confirm_keyboard())
         return
 
+    curr_speed = await get_speed_profile()
     await _show_pre_launch_config(
         status_msg,
         state,
@@ -365,7 +370,7 @@ async def handle_target_group(message: Message, state: FSMContext, bot: Bot):
         target_link,
         chat_type,
         selected_limit=20,
-        speed_profile=settings.DEFAULT_SPEED_PROFILE
+        speed_profile=curr_speed
     )
 
 
@@ -419,6 +424,7 @@ async def callback_migrate_confirm(callback: CallbackQuery, state: FSMContext, b
             await client.disconnect()
 
     await callback.answer("Группа мигрирована в супергруппу.")
+    curr_speed = await get_speed_profile()
     await _show_pre_launch_config(
         callback.message,
         state,
@@ -426,7 +432,7 @@ async def callback_migrate_confirm(callback: CallbackQuery, state: FSMContext, b
         target_link,
         chat_type,
         selected_limit=20,
-        speed_profile=settings.DEFAULT_SPEED_PROFILE
+        speed_profile=curr_speed
     )
 
 
@@ -448,7 +454,7 @@ async def _show_pre_launch_config(
     selected_limit: Optional[int] = 20,
     speed_profile: Optional[str] = None
 ):
-    profile = speed_profile or settings.DEFAULT_SPEED_PROFILE
+    profile = speed_profile or await get_speed_profile()
     await state.update_data(
         target_group_id=target_group_id,
         target_link=target_link,
@@ -491,7 +497,7 @@ async def callback_cfg_limit(callback: CallbackQuery, state: FSMContext):
     target_group_id = data.get("target_group_id")
     target_link = data.get("target_link", "")
     chat_type = data.get("chat_type", "supergroup")
-    speed_profile = data.get("speed_profile", settings.DEFAULT_SPEED_PROFILE)
+    speed_profile = data.get("speed_profile") or await get_speed_profile()
 
     if limit_str == "custom":
         await state.set_state(InviterState.waiting_for_invite_limit)
@@ -560,7 +566,7 @@ async def callback_cfg_return(callback: CallbackQuery, state: FSMContext):
     target_link = data.get("target_link", "")
     chat_type = data.get("chat_type", "supergroup")
     selected_limit = data.get("selected_limit", 20)
-    speed_profile = data.get("speed_profile", settings.DEFAULT_SPEED_PROFILE)
+    speed_profile = data.get("speed_profile") or await get_speed_profile()
     await _show_pre_launch_config(
         callback.message,
         state,
@@ -597,7 +603,7 @@ async def handle_custom_limit(message: Message, state: FSMContext):
     target_group_id = data.get("target_group_id")
     target_link = data.get("target_link", "")
     chat_type = data.get("chat_type", "supergroup")
-    speed_profile = data.get("speed_profile", settings.DEFAULT_SPEED_PROFILE)
+    speed_profile = data.get("speed_profile") or await get_speed_profile()
 
     status_msg = await message.answer("Обновление настроек...")
     await _show_pre_launch_config(
@@ -650,7 +656,7 @@ async def handle_custom_delay(message: Message, state: FSMContext):
         )
 
     if source == "main_menu":
-        settings.DEFAULT_SPEED_PROFILE = custom_profile
+        await set_speed_profile(custom_profile)
         await state.clear()
         await message.answer(
             f"<b>[УСПЕХ] Профиль скорости сохранен</b>\n\n"
@@ -684,7 +690,7 @@ async def callback_cfg_launch(callback: CallbackQuery, state: FSMContext, bot: B
     target_link = data.get("target_link", "")
     chat_type = data.get("chat_type", "supergroup")
     selected_limit = data.get("selected_limit", 20)
-    speed_profile = data.get("speed_profile", settings.DEFAULT_SPEED_PROFILE)
+    speed_profile = data.get("speed_profile") or await get_speed_profile()
 
     if not target_group_id or not target_link:
         await callback.answer("Ошибка: данные задачи устарели. Начните заново.", show_alert=True)

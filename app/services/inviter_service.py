@@ -37,8 +37,8 @@ logger = logging.getLogger("tg_invite_machine")
 TaskUpdateCallback = Callable[..., Awaitable[None]]
 
 def calculate_delay(speed_profile: str) -> float:
-    base_min = settings.MIN_DELAY_BETWEEN_INVITES
-    base_max = settings.MAX_DELAY_BETWEEN_INVITES
+    base_min = float(settings.MIN_DELAY_BETWEEN_INVITES)
+    base_max = float(settings.MAX_DELAY_BETWEEN_INVITES)
     if speed_profile.startswith("custom:"):
         try:
             parts = speed_profile.split(":")
@@ -50,35 +50,34 @@ def calculate_delay(speed_profile: str) -> float:
             min_pause, max_pause = base_min, base_max
         if max_pause <= 0.0:
             return 0.0
-        if max_pause <= 1.0:
-            return random.uniform(min_pause, max_pause)
+        # When user explicitly sets custom interval, strictly respect their exact range!
+        return random.uniform(min_pause, max_pause)
     else:
         profile_bounds = {
             "cautious": (base_min * 1.5, base_max * 1.5),
             "normal": (base_min, base_max),
-            "fast": (max(10, base_min * 0.5), max(20, base_max * 0.5))
+            "fast": (max(10.0, base_min * 0.5), max(20.0, base_max * 0.5))
         }
         min_pause, max_pause = profile_bounds.get(speed_profile, (base_min, base_max))
-    roll = random.random()
-    if roll < 0.25:
-        return max(0.0, random.uniform(min_pause * 0.7, min_pause))
-    if roll < 0.85:
-        return max(0.0, random.uniform(min_pause, max_pause))
-    return max(0.0, random.uniform(max_pause, max_pause * 1.5))
+        roll = random.random()
+        if roll < 0.25:
+            return max(0.0, random.uniform(min_pause * 0.85, min_pause))
+        if roll < 0.85:
+            return max(0.0, random.uniform(min_pause, max_pause))
+        return max(0.0, random.uniform(max_pause, max_pause * 1.2))
 
 async def simulate_pre_invite_reading(client: TelegramClient, target_entity: Any, mark_read: bool = True) -> None:
     try:
         await client(UpdateStatusRequest(offline=False))
         message_ids = []
-        async for message in client.iter_messages(target_entity, limit=random.randint(3, 7)):
+        async for message in client.iter_messages(target_entity, limit=random.randint(2, 4)):
             if message and message.id:
                 message_ids.append(message.id)
-            await asyncio.sleep(random.uniform(1.2, 3.5))
+            await asyncio.sleep(random.uniform(0.5, 1.2))
 
         if mark_read and message_ids:
             await client.send_read_acknowledge(target_entity, max_id=max(message_ids))
     except Exception as exc:
-        # read markers are cosmetic: never fail the invite over them
         logger.debug("pre-invite reading skipped: %s", exc)
 
 class InviterOrchestrator:
@@ -399,10 +398,17 @@ class InviterOrchestrator:
 
             try:
                 await client.connect()
-                is_turbo = speed_profile.startswith("custom:") and any(
-                    speed_profile.startswith(f"custom:{p}:") for p in ("0", "1")
-                )
-                if not is_turbo:
+                skip_reading = False
+                if speed_profile == "fast":
+                    skip_reading = True
+                elif speed_profile.startswith("custom:"):
+                    try:
+                        parts = speed_profile.split(":")
+                        if float(parts[1]) < 15.0:
+                            skip_reading = True
+                    except Exception:
+                        pass
+                if not skip_reading:
                     await simulate_pre_invite_reading(client, target_input, mark_read=mark_read)
 
                 if target_member.username:
@@ -627,19 +633,19 @@ class InviterOrchestrator:
                         is_final=False
                     )
 
-            if invite_success or error_status in ("flood_wait", "peer_flood"):
-                pause_time = calculate_delay(speed_profile)
-            else:
-                is_turbo = speed_profile.startswith("custom:") and any(
-                    speed_profile.startswith(f"custom:{p}:") for p in ("0", "1")
-                )
-                if is_turbo:
-                    pause_time = calculate_delay(speed_profile)
-                else:
-                    pause_time = random.uniform(2.0, 4.0)
+            pause_time = calculate_delay(speed_profile)
+            logger.info(
+                "Next invite delay: %.1fs (profile: %s, last_status: %s)",
+                pause_time,
+                speed_profile,
+                error_status or "invited"
+            )
 
-            try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=pause_time)
+            if pause_time > 0:
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=pause_time)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+            elif self._stop_event.is_set():
                 break
-            except asyncio.TimeoutError:
-                pass
